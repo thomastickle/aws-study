@@ -72,15 +72,30 @@ def run_quiz(
     cur = conn.execute(
         """
         INSERT INTO sessions(certification_id, started_at, target_year, mode, strategy, requested_count, source_kind)
-        VALUES (?,?,?,?,?,?, 'interactive')
+        VALUES (:certification_id, :started_at, :target_year, :mode, :strategy, :requested_count, 'interactive')
         """,
-        (cert_id, _now(), target_year, mode, strategy, count),
+        {
+            "certification_id": cert_id,
+            "started_at": _now(),
+            "target_year": target_year,
+            "mode": mode,
+            "strategy": strategy,
+            "requested_count": count,
+        },
     )
     session_id = int(cur.lastrowid)
     for pos, item in enumerate(picked, 1):
         conn.execute(
-            "INSERT INTO session_questions(session_id, question_id, position, selection_weight) VALUES (?,?,?,?)",
-            (session_id, item.question_id, pos, item.weight),
+            """
+            INSERT INTO session_questions(session_id, question_id, position, selection_weight)
+            VALUES (:session_id, :question_id, :position, :selection_weight)
+            """,
+            {
+                "session_id": session_id,
+                "question_id": item.question_id,
+                "position": pos,
+                "selection_weight": item.weight,
+            },
         )
     conn.commit()
 
@@ -127,8 +142,11 @@ def run_quiz(
         aid = int(cur.lastrowid)
         for i in selected:
             conn.execute(
-                "INSERT INTO attempt_options(attempt_id, option_id, selected) VALUES (?,?,1)",
-                (aid, opts[i]["id"]),
+                """
+                INSERT INTO attempt_options(attempt_id, option_id, selected)
+                VALUES (:attempt_id, :option_id, 1)
+                """,
+                {"attempt_id": aid, "option_id": opts[i]["id"]},
             )
         conn.commit()
         selected_texts = [f"{labels[i]}. {opts[i]['option_text']}" for i in sorted(selected)]
@@ -142,7 +160,10 @@ def run_quiz(
                 if o["rationale"]:
                     print(f"  {labels[i]} rationale: {o['rationale']}")
 
-    conn.execute("UPDATE sessions SET completed_at=? WHERE id=?", (_now(), session_id))
+    conn.execute(
+        "UPDATE sessions SET completed_at=:completed_at WHERE id=:session_id",
+        {"completed_at": _now(), "session_id": session_id},
+    )
     conn.commit()
 
     correct_n = sum(1 for _, ok, _, _ in pending_results if ok)
