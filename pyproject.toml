@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aws-study"
+version = "0.1.0"
+description = "Local SQLite-backed certification question bank and adaptive mini-exam CLI"
+requires-python = ">=3.14"
+authors = [{name = "Thomas Tickle"}]
+dependencies = []
+
+[project.scripts]
+aws-study = "aws_study.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.package-data]
+aws_study = ["schema.sql"]

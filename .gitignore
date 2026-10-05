@@ -1,0 +1,36 @@
+# Local/private study material. Keep the code public; keep question banks/history private.
+private/*
+!private/README.md
+
+# SQLite working files
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Raw assessment exports / downloaded banks
+*.html
+*.htm
+*.mhtml
+question-banks/
+imports/
+
+# Generated reports outside private/
+reports/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+
+# Editor/OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "aws-study normalized question bank v1",
+  "type": "object",
+  "required": ["questions"],
+  "properties": {
+    "schema_version": {"type": "integer"},
+    "questions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["source", "source_index", "question", "options"],
+        "properties": {
+          "source": {"type": "string"},
+          "source_index": {"type": "integer"},
+          "question": {"type": "string"},
+          "status": {"type": ["string", "null"]},
+          "qtype": {"type": ["string", "null"]},
+          "question_type": {"enum": ["single_select", "multi_select"]},
+          "dedup_group": {"type": ["string", "null"]},
+          "dedup_role": {"enum": ["canonical", "alternate"]},
+          "variant_group": {"type": ["string", "null"]},
+          "options": {
+            "type": "array",
+            "minItems": 2,
+            "items": {
+              "type": "object",
+              "required": ["label", "correct"],
+              "properties": {
+                "letter": {"type": ["string", "null"]},
+                "label": {"type": "string"},
+                "correct": {"type": "boolean"},
+                "selected": {"type": "boolean"},
+                "rationale": {"type": ["string", "null"]}
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
