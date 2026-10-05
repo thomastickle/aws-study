@@ -34,6 +34,20 @@ def _parse_answer(raw: str, labels: list[str]) -> set[int]:
     return selected
 
 
+def _prompt_confidence() -> str | None:
+    raw = input(
+        "Confidence [(C)onfident, (E)ducated Guess, (U)nsure, Enter to skip]: "
+    ).strip().lower()
+    return {
+        "c": "high",
+        "confident": "high",
+        "e": "medium",
+        "educated guess": "medium",
+        "u": "low",
+        "unsure": "low",
+    }.get(raw)
+
+
 def run_quiz(
     conn: sqlite3.Connection,
     cert_id: int,
@@ -94,16 +108,21 @@ def run_quiz(
         elapsed_ms = int((time.monotonic() - start) * 1000)
         correct_set = {i for i, o in enumerate(opts) if o["is_correct"]}
         is_correct = selected == correct_set
-        confidence = None
-        raw_conf = input("Confidence [l/m/h, Enter to skip]: ").strip().lower()
-        confidence = {"l": "low", "m": "medium", "h": "high"}.get(raw_conf)
+        confidence = _prompt_confidence()
 
         cur = conn.execute(
             """
             INSERT INTO attempts(session_id, question_id, attempted_at, is_correct, confidence, elapsed_ms)
-            VALUES (?,?,?,?,?,?)
+            VALUES (:session_id, :question_id, :attempted_at, :is_correct, :confidence, :elapsed_ms)
             """,
-            (session_id, item.question_id, _now(), 1 if is_correct else 0, confidence, elapsed_ms),
+            {
+                "session_id": session_id,
+                "question_id": item.question_id,
+                "attempted_at": _now(),
+                "is_correct": int(is_correct),
+                "confidence": confidence,
+                "elapsed_ms": elapsed_ms,
+            },
         )
         aid = int(cur.lastrowid)
         for i in selected:
