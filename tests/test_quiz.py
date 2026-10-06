@@ -175,13 +175,23 @@ class QuizTests(unittest.TestCase):
         self.service.finish_session(session_id)
 
     def test_multi_select_exact_set_and_extra_single_choices(self):
-        for selected_labels in ("A", "AFB", "FA"):
+        for selection in ("missing", "extra", "reversed"):
             session_id = self.session()
             question = next(
                 q
                 for q in self.service.questions(session_id)
                 if q.kind == "multi_select"
             )
+            correct_labels = [o.label for o in question.options if o.correct]
+            wrong_label = next(
+                o.label for o in question.options if not o.correct
+            )
+            if selection == "missing":
+                selected_labels = correct_labels[:1]
+            elif selection == "extra":
+                selected_labels = correct_labels + [wrong_label]
+            else:
+                selected_labels = list(reversed(correct_labels))
             selected = {
                 o.id for o in question.options if o.label in selected_labels
             }
@@ -192,7 +202,7 @@ class QuizTests(unittest.TestCase):
                 "medium",
                 1,
             )
-            self.assertEqual(result.is_correct, selected_labels == "FA")
+            self.assertEqual(result.is_correct, selection == "reversed")
         session_id = self.session()
         single = self.service.questions(session_id)[0]
         # Preserve incorrect scoring for excess single-select choices.
@@ -348,26 +358,37 @@ class QuizTests(unittest.TestCase):
         session_id = self.session(target_year=2027, include_unverified=True)
         self.assertEqual(len(self.service.questions(session_id)), 2)
 
-    def test_labels_are_generated_from_canonical_display_order(self):
+    def test_labels_are_generated_from_saved_session_order(self):
         question = self.service.questions(self.session())[0]
         self.assertEqual([o.label for o in question.options], list("ABCDEF"))
 
     def test_cli_study_and_exam_feedback_timing_and_score(self):
         for mode in ("study", "exam"):
             output = StringIO()
-            answers = iter(("a", "Confident", "f ;,, A a", ""))
             calls = 0
+            selected_first = ""
 
             def answer(prompt):
-                nonlocal calls
-                if calls == 2:
-                    text = output.getvalue()
-                    self.assertEqual(
-                        "Correct answer(s):" in text, mode == "study"
-                    )
-                    self.assertEqual("Explanation B" in text, mode == "study")
+                nonlocal calls, selected_first
+                call = calls
                 calls += 1
-                return next(answers)
+                if call in (1, 3):
+                    return "Confident" if call == 1 else ""
+                sid = self.conn.execute(
+                    "SELECT MAX(id) FROM sessions"
+                ).fetchone()[0]
+                questions = self.service.questions(sid)
+                if call == 0:
+                    wrong = next(
+                        o for o in questions[0].options if not o.correct
+                    )
+                    selected_first = f"{wrong.label}. {wrong.text}"
+                    return wrong.label.lower()
+                text = output.getvalue()
+                self.assertEqual("Correct answer(s):" in text, mode == "study")
+                self.assertEqual("Explanation B" in text, mode == "study")
+                labels = [o.label for o in questions[1].options if o.correct]
+                return " ;,, ".join(reversed(labels)).lower() + " " + labels[0]
 
             with patch("builtins.input", side_effect=answer):
                 with redirect_stdout(output):
@@ -383,7 +404,9 @@ class QuizTests(unittest.TestCase):
             self.assertIn("Score: 1/2 (50.0%)", output.getvalue())
             self.assertIn("Select 2 answers", output.getvalue())
             if mode == "exam":
-                self.assertIn("Q1: ✗ selected A. Choice A", output.getvalue())
+                self.assertIn(
+                    f"Q1: ✗ selected {selected_first}", output.getvalue()
+                )
             self.assertTrue(self.repository.is_complete(session_id))
             confidences = [
                 row[0]

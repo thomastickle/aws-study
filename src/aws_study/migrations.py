@@ -14,6 +14,7 @@ from .db import init_db, open_readonly, schema_version
 from .fingerprints import normalize_match_text
 from .import_repository import ImportRepository
 from .migration_repository import HISTORY_TABLES, MigrationRepository
+from .quiz_repository import QuizRepository
 
 SOURCE_KEYS_2026 = {
     "pretest": "official-pretest-2026",
@@ -33,6 +34,7 @@ def _migrate_records(
     for items in options.values():
         items.sort(key=lambda o: o["option_order"])
     question_map, answer_map = {}, {}
+    historical_answer_orders = {}
     source_orders = defaultdict(int)
     source_refs = set()
     active = defaultdict(int)
@@ -97,6 +99,9 @@ def _migrate_records(
                 answer_map[option["id"]] = ids[
                     normalize_match_text(option["option_text"])
                 ]
+            historical_answer_orders[old["id"]] = [
+                answer_map[option["id"]] for option in choices
+            ]
             source_orders[old["source_id"]] += 1
             imports.provenance(
                 qid,
@@ -133,6 +138,12 @@ def _migrate_records(
                 if table == "attempt_options":
                     row["option_id"] = answer_map[row["option_id"]]
                 repository.insert_record(table, row)
+                if table == "session_questions":
+                    QuizRepository(conn).save_answer_order(
+                        row["session_id"],
+                        row["question_id"],
+                        historical_answer_orders[old["question_id"]],
+                    )
         expected = {table: len(records[table]) for table in HISTORY_TABLES}
         summary = repository.validate(expected)
         if summary["provenance_rows"] != len(records["questions"]):

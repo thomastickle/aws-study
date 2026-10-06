@@ -8,7 +8,7 @@ from importlib.resources import files
 from pathlib import Path
 
 DEFAULT_DB = Path("private/aws-study.db")
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 def open_readonly(path: str | Path) -> sqlite3.Connection:
@@ -99,7 +99,7 @@ def schema_version(conn: sqlite3.Connection) -> int:
         "attempt_options": {"attempt_id", "option_id", "selected"},
         "review_notes": {"id", "question_id", "certification_id", "note_text"},
     }
-    if version in (2, 3) and required.keys() <= tables:
+    if version in (2, 3, 4) and required.keys() <= tables:
         for table, expected in required.items():
             columns = {
                 r[1] for r in conn.execute(f"PRAGMA table_info({table})")
@@ -108,7 +108,7 @@ def schema_version(conn: sqlite3.Connection) -> int:
                 raise ValueError(
                     f"Incomplete v2 schema: missing columns in {table}"
                 )
-        if version == 3:
+        if version >= 3:
             columns = {
                 r[1]
                 for r in conn.execute(
@@ -118,6 +118,18 @@ def schema_version(conn: sqlite3.Connection) -> int:
             if not {"question_id", "group_key"} <= columns:
                 raise ValueError(
                     "Incomplete v3 schema: missing selection groups"
+                )
+        if version >= 4:
+            columns = {
+                r[1]
+                for r in conn.execute("PRAGMA table_info(session_answers)")
+            }
+            if (
+                not {"session_id", "question_id", "answer_id", "display_order"}
+                <= columns
+            ):
+                raise ValueError(
+                    "Incomplete v4 schema: missing session answer order"
                 )
         return version
     raise ValueError(f"Unsupported database schema (user_version={version})")
@@ -147,7 +159,7 @@ def connect(path: str | Path = DEFAULT_DB) -> sqlite3.Connection:
 
 
 def init_db(conn: sqlite3.Connection) -> None:
-    """Initialize new databases; never pretend CREATE IF NOT EXISTS migrates."""
+    """Initialize new databases and apply explicit additive schema upgrades."""
     version = schema_version(conn)
     if version == SCHEMA_VERSION:
         return
@@ -155,7 +167,9 @@ def init_db(conn: sqlite3.Connection) -> None:
         raise ValueError(
             "Legacy database: run migrate-v1-to-v2 into a new file"
         )
-    scripts = ["schema_v3.sql"]
+    scripts = ["schema_v4.sql"]
+    if version <= 2:
+        scripts.insert(0, "schema_v3.sql")
     if version == 0:
         scripts.insert(0, "schema.sql")
     schema = "\n".join(

@@ -66,19 +66,22 @@ class ReportingTests(unittest.TestCase):
         self.cert_id = self.conn.execute(
             "SELECT id FROM certifications",
         ).fetchone()[0]
-        with (
-            patch("builtins.input", side_effect=["a", "u"]),
-            redirect_stdout(StringIO()),
-        ):
-            self.session_id = run_quiz(
-                QuizService(QuizRepository(self.conn)),
-                self.cert_id,
-                count=1,
-                target_year=2026,
-                mode="exam",
-                strategy="random",
-                seed=1,
-            )
+        service = QuizService(QuizRepository(self.conn))
+        self.session_id = service.create_session(
+            self.cert_id,
+            count=1,
+            target_year=2026,
+            mode="exam",
+            strategy="random",
+            seed=1,
+        )
+        q = service.questions(self.session_id)[0]
+        wrong = next(o for o in q.options if not o.correct)
+        correct = next(o for o in q.options if o.correct)
+        self.selected_text = f"{wrong.label}. {wrong.text}"
+        self.correct_text = f"{correct.label}. {correct.text}"
+        service.record_answer(self.session_id, q.id, {wrong.id}, "low", 0)
+        service.finish_session(self.session_id)
         self.clock = patch("aws_study.reporting.datetime")
         self.mock_datetime = self.clock.start()
         self.mock_datetime.now.return_value = datetime(2026, 10, 6, 14, 30, 12)
@@ -104,8 +107,8 @@ class ReportingTests(unittest.TestCase):
         )
         report = paths["report"].read_text(encoding="utf-8")
         self.assertIn("Score: 0/1 (0.0%)", report)
-        self.assertIn("Selected: A. Wrong", report)
-        self.assertIn("Correct: B. Right", report)
+        self.assertIn(f"Selected: {self.selected_text}", report)
+        self.assertIn(f"Correct: {self.correct_text}", report)
         prompt = paths["prompt"].read_text(encoding="utf-8")
         self.assertIn("AWS CLF-C02", prompt)
         context = json.loads(paths["context"].read_text(encoding="utf-8"))
@@ -236,8 +239,8 @@ class ReportingTests(unittest.TestCase):
         self.conn.close()
         paths = write_report_bundle(bundle, self.root / "offline")
         report = paths["report"].read_text(encoding="utf-8")
-        self.assertIn("Selected: A. Wrong", report)
-        self.assertIn("Correct: B. Right", report)
+        self.assertIn(f"Selected: {self.selected_text}", report)
+        self.assertIn(f"Correct: {self.correct_text}", report)
         context = json.loads(paths["context"].read_text(encoding="utf-8"))
         self.assertEqual(len(context["questions"]), 1)
 

@@ -8,6 +8,7 @@ from pathlib import Path
 from aws_study.db import SCHEMA_VERSION, connect, init_db
 from aws_study.migrations import migrate_v1_to_v2
 from aws_study.report_repository import ReportRepository
+from aws_study.report_service import ReportService
 from aws_study.source_repository import SourceRepository
 
 
@@ -158,6 +159,11 @@ class MigrationTests(unittest.TestCase):
             )
         ]
         self.assertEqual(notes, [1, 1, None])
+        baseline = ReportService(ReportRepository(conn)).session_data(2)
+        self.assertEqual(baseline["attempts"][0]["selected"], ["A. Right"])
+        interactive = ReportService(ReportRepository(conn)).session_data(1)
+        self.assertEqual(interactive["attempts"][0]["selected"], ["A. Wrong"])
+        self.assertEqual(interactive["attempts"][0]["correct"], ["B. Right"])
         sources = ReportRepository(conn).question_context(1)["sources"]
         self.assertEqual(len(sources), 2)
         self.assertEqual(sources[1]["answers"][0]["answer_text"], "Right")

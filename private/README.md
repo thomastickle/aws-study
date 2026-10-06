@@ -16,5 +16,7 @@ The bank retains question variants and their separate answers/history. Quiz
 selection allows one per normalized stem or curated `selection_group` in each
 run, choosing among eligible variants randomly according to the quiz strategy.
 Source files may carry `selection_group` for confirmed wording variants.
-Schema-2 databases upgrade additively to schema 3 on opening; the original legacy
-database still requires explicit migration into a separate file.
+Schema-2 and schema-3 databases upgrade additively to schema 4 on opening; the
+original legacy database still requires explicit migration into a separate file.
+New sessions shuffle answers and save their order, so answer letters agree with
+later reports. Existing sessions retain their displayed order and history.

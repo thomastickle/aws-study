@@ -29,7 +29,13 @@ class CoreTests(BankTestCase):
             seed=1,
         )
         q = service.questions(sid)[0]
-        service.record_answer(sid, q.id, {q.options[0].id}, "low", 0)
+        service.record_answer(
+            sid,
+            q.id,
+            {next(o.id for o in q.options if not o.correct)},
+            "low",
+            0,
+        )
         self.assertGreater(
             candidates(self.conn, 1, target_year=2026, strategy="adaptive")[
                 0

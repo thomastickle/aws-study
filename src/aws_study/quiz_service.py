@@ -1,6 +1,8 @@
 """Quiz selection, scoring, and session lifecycle without terminal I/O."""
+
 from __future__ import annotations
 
+import random
 from datetime import datetime, timezone
 
 from .quiz_models import AnswerResult, Question
@@ -29,7 +31,7 @@ class QuizService:
         seed: int | None = None,
         include_unverified: bool = False,
     ) -> int:
-        """Choose eligible questions and atomically save their order."""
+        """Choose questions and atomically save shuffled answers for this session."""
         if count < 1:
             raise ValueError("Question count must be at least 1.")
         if mode not in ("study", "exam"):
@@ -37,7 +39,8 @@ class QuizService:
         if strategy not in ("adaptive", "random", "weak", "new"):
             raise ValueError("Unknown selection strategy.")
         history = self._repository.candidate_history(
-            cert_id, target_year=target_year,
+            cert_id,
+            target_year=target_year,
             include_unverified=include_unverified,
             include_recent=strategy in ("adaptive", "weak"),
         )
@@ -48,14 +51,30 @@ class QuizService:
                 "verification filters."
             )
         picked = weighted_sample(pool, min(count, len(pool)), seed=seed)
+        rng = random.Random(
+            f"answer-order:{seed}" if seed is not None else None
+        )
         with self._repository.transaction():
-            return self._repository.insert_session(
-                cert_id, started_at=_now(), target_year=target_year,
-                mode=mode, strategy=strategy, requested_count=count,
+            session_id = self._repository.insert_session(
+                cert_id,
+                started_at=_now(),
+                target_year=target_year,
+                mode=mode,
+                strategy=strategy,
+                requested_count=count,
                 selected_questions=[
                     (item.question_id, item.weight) for item in picked
                 ],
             )
+            question_ids = [item.question_id for item in picked]
+            answers = self._repository.answer_ids(question_ids)
+            for question_id in question_ids:
+                answer_ids = answers[question_id]
+                rng.shuffle(answer_ids)
+                self._repository.save_answer_order(
+                    session_id, question_id, answer_ids
+                )
+            return session_id
 
     def questions(self, session_id: int) -> tuple[Question, ...]:
         """Return saved questions as models in session order."""
@@ -90,12 +109,17 @@ class QuizService:
             correct_options = tuple(o for o in question.options if o.correct)
             is_correct = selected == {o.id for o in correct_options}
             self._repository.insert_attempt(
-                session_id, question_id, selected, attempted_at=_now(),
-                is_correct=is_correct, confidence=confidence,
+                session_id,
+                question_id,
+                selected,
+                attempted_at=_now(),
+                is_correct=is_correct,
+                confidence=confidence,
                 elapsed_ms=elapsed_ms,
             )
             return AnswerResult(
-                question_id, is_correct,
+                question_id,
+                is_correct,
                 tuple(o for o in question.options if o.id in selected),
                 correct_options,
             )

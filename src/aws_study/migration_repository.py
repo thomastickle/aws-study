@@ -1,4 +1,4 @@
-"""Read legacy records and validate/copy history into the v2 schema."""
+"""Read legacy records and validate/copy history into the current canonical schema."""
 
 from __future__ import annotations
 
@@ -83,6 +83,11 @@ class MigrationRepository(SQLiteRepository):
                     f"{table}: expected {expected}, found {actual}"
                 )
         checks = {
+            "incomplete session answer order": """
+                SELECT sq.question_id FROM session_questions sq
+                WHERE (SELECT COUNT(*) FROM session_answers sa WHERE
+                       sa.session_id=sq.session_id AND sa.question_id=sq.question_id)
+                      <> (SELECT COUNT(*) FROM answers ans WHERE ans.question_id=sq.question_id)""",
             "selected answer belongs to another question": """
                 SELECT ao.attempt_id FROM attempt_options ao
                 JOIN attempts a ON a.id=ao.attempt_id

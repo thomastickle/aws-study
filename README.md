@@ -92,9 +92,9 @@ Linux/macOS:
 There are **no runtime package downloads**. The top-level `aws-study.py` launcher loads the code directly from `src/`. The `pyproject.toml` remains available if you later want to package/install it conventionally.
 
 Local study data lives under `private/` and is ignored by Git. New databases
-use database schema 3 (with schema-v2 question-bank inputs). Existing schema-2
-databases receive an additive selection-group table on opening; history stays
-intact. Existing v1 databases require a separate migration; the program
+use database schema 4 (with schema-v2 question-bank inputs). Existing schema-2
+and schema-3 databases receive additive selection and answer-order tables on
+opening; history stays intact. Existing v1 databases require a separate migration; the program
 will give an instruction rather than changing them in place.
 
 ### Testing v2 with existing history
@@ -156,6 +156,18 @@ python aws-study.py quiz --cert CLF-C02 -n 20 --year 2026 --mode study
 ```
 
 `exam` mode waits until the end to show misses. `study` mode reveals the correct answer and stored rationale after each response.
+
+Answer choices are shuffled when each session is created, in both modes. Letters
+A/B/C/etc. reflect that session's presentation. The saved order stays stable when
+questions are loaded again and when reports/context packs are regenerated;
+grading uses answer IDs. `--seed` reproduces both question selection and answer
+order when the bank/history are unchanged. An ordinary random shuffle may
+occasionally produce the original order.
+
+Older sessions keep their prior displayed order during database upgrades. Legacy
+v1 migration maps each original question's answer order into the saved session,
+including source variants with different orders. Canonical bank content and
+source-specific answer order remain separate from session presentation.
 
 Quiz questions, choices, and feedback wrap at word boundaries within 80 columns
 by default. Narrower terminals reduce the width automatically, leaving two
@@ -359,7 +371,7 @@ Major tables:
 - `sources` — provenance and source freshness
 - `questions` / `answers` — canonical content and curated area/topic
 - `question_sources` / `question_source_answers` — source occurrences and explanations
-- `sessions` / `session_questions` — each generated quiz
+- `sessions` / `session_questions` / `session_answers` — each quiz and its saved question/answer positions
 - `attempts` / `attempt_options` — actual learning history
 - `review_notes` — future human/AI annotations without mutating canonical question text
 

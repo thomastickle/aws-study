@@ -129,6 +129,42 @@ class QuizRepository(SQLiteRepository):
             )
         return session_id
 
+    def answer_ids(self, question_ids: Sequence[int]) -> dict[int, list[int]]:
+        """Load all canonical answer IDs in a stable order for shuffling."""
+        if not question_ids:
+            return {}
+        params = {f"q{index}": qid for index, qid in enumerate(question_ids)}
+        binds = ",".join(f":{key}" for key in params)
+        grouped: dict[int, list[int]] = {}
+        for row in self._conn.execute(
+            f"""SELECT id,question_id FROM answers WHERE question_id IN ({binds})
+                ORDER BY question_id,display_order""",
+            params,
+        ):
+            grouped.setdefault(row["question_id"], []).append(row["id"])
+        return grouped
+
+    def save_answer_order(
+        self,
+        session_id: int,
+        question_id: int,
+        answer_ids: Sequence[int],
+    ) -> None:
+        """Save a session's complete answer permutation in its transaction."""
+        self._conn.executemany(
+            """INSERT INTO session_answers(session_id,question_id,answer_id,display_order)
+               VALUES (:session_id,:question_id,:answer_id,:display_order)""",
+            (
+                {
+                    "session_id": session_id,
+                    "question_id": question_id,
+                    "answer_id": answer_id,
+                    "display_order": order,
+                }
+                for order, answer_id in enumerate(answer_ids, 1)
+            ),
+        )
+
     def lock_session(self, session_id: int) -> None:
         """Acquire a write lock before checking session state."""
         self._conn.execute(
@@ -149,7 +185,7 @@ class QuizRepository(SQLiteRepository):
     def questions(self, session_id: int) -> tuple[Question, ...]:
         """Load a session's questions and choices in their saved order."""
         return tuple(
-            self._question(row)
+            self._question(row, session_id)
             for row in self._conn.execute(
                 """SELECT q.id, q.question_text, q.question_type, q.select_count
                    FROM session_questions sq JOIN questions q
@@ -170,14 +206,15 @@ class QuizRepository(SQLiteRepository):
         ).fetchone()
         if row is None:
             raise ValueError("Question is not part of this session.")
-        return self._question(row)
+        return self._question(row, session_id)
 
-    def _question(self, row: sqlite3.Row) -> Question:
+    def _question(self, row: sqlite3.Row, session_id: int) -> Question:
         options = self._conn.execute(
-            """SELECT id, answer_text, is_correct, rationale
-               FROM answers WHERE question_id=:question_id
-               ORDER BY display_order""",
-            {"question_id": row["id"]},
+            """SELECT a.id,a.answer_text,a.is_correct,a.rationale,sa.display_order
+               FROM session_answers sa JOIN answers a ON a.id=sa.answer_id
+               WHERE sa.session_id=:session_id AND sa.question_id=:question_id
+               ORDER BY sa.display_order""",
+            {"session_id": session_id, "question_id": row["id"]},
         ).fetchall()
         return Question(
             row["id"],
@@ -186,12 +223,12 @@ class QuizRepository(SQLiteRepository):
             tuple(
                 Option(
                     option["id"],
-                    chr(65 + index),
+                    chr(64 + option["display_order"]),
                     option["answer_text"],
                     bool(option["is_correct"]),
                     option["rationale"],
                 )
-                for index, option in enumerate(options)
+                for option in options
             ),
             row["select_count"],
         )

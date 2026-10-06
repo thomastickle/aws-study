@@ -7,7 +7,7 @@ from .report_repository import ReportRepository
 
 
 def _choice_text(choice: ReportChoice) -> str:
-    # Label choices using the stable canonical display order.
+    # Label choices using the saved session display order.
     prefix = f"{choice.label}. " if choice.label is not None else ""
     return prefix + choice.text
 
@@ -51,7 +51,9 @@ class ReportService:
         return ReportBundle(
             data,
             tuple(
-                self._repository.question_context(question_id)
+                self._repository.question_context(
+                    question_id, session_id=session_id
+                )
                 for question_id in question_ids
             ),
         )

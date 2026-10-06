@@ -108,7 +108,13 @@ class PersistenceTests(BankTestCase):
             seed=1,
         )
         for q in service.questions(sid):
-            service.record_answer(sid, q.id, {q.options[0].id}, None, 0)
+            service.record_answer(
+                sid,
+                q.id,
+                {next(o.id for o in q.options if not o.correct)},
+                None,
+                0,
+            )
         self.conn.execute("UPDATE questions SET is_active=0 WHERE id=2")
         self.conn.commit()
         stats = StatisticsRepository(self.conn).for_certification(1)

@@ -254,6 +254,8 @@ class SamplerTests(BankTestCase):
 
     def test_v2_upgrade_preserves_rows_and_is_idempotent(self):
         self.import_questions([question()])
+        self.conn.execute("DROP TABLE session_answers")
+        self.conn.execute("DROP INDEX idx_answer_question_identity")
         self.conn.execute("DROP TABLE question_selection_groups")
         self.conn.execute("PRAGMA user_version=2")
         self.conn.commit()

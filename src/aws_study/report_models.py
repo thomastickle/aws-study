@@ -11,7 +11,7 @@ JsonRecord = dict[str, Any]
 
 @dataclass(frozen=True)
 class ReportChoice:
-    """Raw answer text and its canonical display letter, before presentation."""
+    """Raw answer text and its saved session display letter, before presentation."""
 
     label: str | None
     text: str
