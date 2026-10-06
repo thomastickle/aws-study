@@ -1,4 +1,5 @@
 import json
+import os
 import sqlite3
 import tempfile
 import unittest
@@ -336,6 +337,55 @@ class QuizTests(unittest.TestCase):
         ):
             with patch("builtins.input", return_value=raw):
                 self.assertEqual(_prompt_confidence(), expected)
+
+    def test_long_quiz_text_and_prompts_fit_narrow_terminals(self):
+        text = (
+            "This synthetic description contains enough separate words to "
+            "wrap across a narrow terminal while preserving readable text."
+        )
+        self.conn.execute("UPDATE questions SET question_text=?", (text,))
+        self.conn.execute(
+            "UPDATE options SET option_text=?, rationale=?", (text, text),
+        )
+        self.conn.commit()
+        for mode in ("exam", "study"):
+            with self.subTest(mode=mode):
+                answers = iter(("a", "C", "a", "U"))
+                prompts = []
+
+                def answer(prompt):
+                    prompts.append(prompt)
+                    return next(answers)
+
+                with (
+                    patch("aws_study.terminal.shutil.get_terminal_size",
+                          return_value=os.terminal_size((52, 24))),
+                    patch("builtins.input", side_effect=answer),
+                    redirect_stdout(StringIO()) as output,
+                ):
+                    session_id = run_quiz(
+                        self.service, self.cert_id, count=2, target_year=2026,
+                        mode=mode, strategy="random", seed=1,
+                    )
+                lines = output.getvalue().splitlines()
+                self.assertTrue(all(len(line) <= 50 for line in lines))
+                self.assertTrue(all(len(line) <= 50 for prompt in prompts
+                                    for line in prompt.splitlines()))
+                self.assertIn("     across a narrow terminal", output.getvalue())
+                self.assertEqual("rationale:" in output.getvalue(),
+                                 mode == "study")
+                self.assertEqual("Q1:" in output.getvalue(), mode == "exam")
+                self.assertTrue(self.repository.is_complete(session_id))
+
+    def test_invalid_wrap_width_does_not_create_a_session(self):
+        with self.assertRaisesRegex(ValueError, "Wrap width must be"):
+            run_quiz(
+                self.service, self.cert_id, count=2, target_year=2026,
+                mode="exam", strategy="random", seed=1, width=0,
+            )
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) FROM sessions",
+        ).fetchone()[0], 0)
 
 
 class SelectionTests(unittest.TestCase):

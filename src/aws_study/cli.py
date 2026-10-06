@@ -23,6 +23,7 @@ from .reporting import (
 from .source_repository import SourceRepository
 from .source_service import SourceService, VERIFICATION_STATUSES
 from .statistics_repository import StatisticsRepository
+from .terminal import DEFAULT_WIDTH
 
 
 def _db(args: argparse.Namespace) -> sqlite3.Connection:
@@ -80,6 +81,7 @@ def cmd_quiz(args: argparse.Namespace) -> None:
             service, certification_id, count=args.count, target_year=args.year,
             mode=args.mode, strategy=args.strategy, seed=args.seed,
             include_unverified=args.include_unverified,
+            width=args.width,
         )
         bundle = ReportService(ReportRepository(conn)).bundle(session_id)
     paths = write_report_bundle(bundle, args.reports)
@@ -214,6 +216,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     x.add_argument("--seed", type=int)
     x.add_argument("--include-unverified", action="store_true")
+    x.add_argument(
+        "--width", type=int, default=DEFAULT_WIDTH,
+        help="Maximum quiz text width; adapts to narrower terminals "
+             "(default: %(default)s)",
+    )
     x.add_argument(
         "--reports", default=str(DEFAULT_REPORT_DIR),
         help="Parent directory for report bundles (default: %(default)s)",

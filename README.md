@@ -121,6 +121,21 @@ python aws-study.py quiz --cert CLF-C02 -n 20 --year 2026 --mode study
 
 `exam` mode waits until the end to show misses. `study` mode reveals the correct answer and stored rationale after each response.
 
+Quiz questions, choices, and feedback wrap at word boundaries within 80 columns
+by default. Narrower terminals reduce the width automatically, leaving two
+columns at the right edge. Continuation lines align with their question or
+answer text, and existing paragraph breaks are preserved. The width is checked
+again as output is printed, so resizing the terminal affects subsequent text.
+
+Use `--width` to choose another maximum, for example:
+
+```bash
+python aws-study.py quiz --cert CLF-C02 --width 100
+```
+
+Hyphenated names and long unbroken tokens stay intact; a token longer than the
+available line may exceed the wrapping width.
+
 ## What happens after each quiz?
 
 Exports are grouped by exam code, then by local export time (24-hour clock):
