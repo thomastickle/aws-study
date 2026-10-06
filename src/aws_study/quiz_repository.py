@@ -1,9 +1,11 @@
 """SQLite persistence for quiz sessions, answers, and selection history."""
+
 from __future__ import annotations
 
 import sqlite3
 from collections.abc import Sequence
 
+from .fingerprints import normalize_match_text
 from .quiz_models import AttemptHistory, Option, Question, QuestionHistory
 from .repository import SQLiteRepository
 
@@ -17,33 +19,37 @@ class QuizRepository(SQLiteRepository):
         *,
         target_year: int | None,
         include_unverified: bool = False,
-        canonical_only: bool = True,
         include_recent: bool = True,
     ) -> tuple[QuestionHistory, ...]:
         """Load eligible questions and the history needed for weighting."""
         where = ["q.certification_id=:certification_id", "q.is_active=1"]
         params = {"certification_id": cert_id, "target_year": target_year}
-        if canonical_only:
-            where.append("q.dedup_role='canonical'")
+        provenance = ["qs.question_id=q.id"]
         if target_year is not None:
-            where.extend([
-                "(q.valid_from_year IS NULL "
-                "OR q.valid_from_year<=:target_year)",
-                "(q.valid_to_year IS NULL OR q.valid_to_year>=:target_year)",
-            ])
+            provenance.extend(
+                [
+                    "(qs.valid_from_year IS NULL OR qs.valid_from_year<=:target_year)",
+                    "(qs.valid_to_year IS NULL OR qs.valid_to_year>=:target_year)",
+                ]
+            )
         if not include_unverified:
-            where.append(
-                "COALESCE(q.verification_status, 'unverified') "
+            provenance.append(
+                "COALESCE(qs.verification_status, 'unverified') "
                 "IN ('official_current','verified_current')"
             )
-            # Verification in one year does not imply freshness in later years.
             if target_year is not None:
-                where.append("q.verified_year>=:target_year")
+                provenance.append("qs.verified_year>=:target_year")
+        where.append(
+            "EXISTS (SELECT 1 FROM question_sources qs WHERE "
+            + " AND ".join(provenance)
+            + ")"
+        )
         rows = self._conn.execute(
-            f"""SELECT q.id, COUNT(a.id) AS attempts,
+            f"""SELECT q.id, q.question_text, g.group_key, COUNT(a.id) AS attempts,
                        SUM(CASE WHEN a.is_correct=0 THEN 1 ELSE 0 END)
                        AS misses
                 FROM questions q LEFT JOIN attempts a ON a.question_id=q.id
+                LEFT JOIN question_selection_groups g ON g.question_id=q.id
                 WHERE {' AND '.join(where)} GROUP BY q.id""",
             params,
         ).fetchall()
@@ -54,8 +60,11 @@ class QuizRepository(SQLiteRepository):
                 miss_count=row["misses"] or 0,
                 recent_attempts=(
                     self._recent_attempts(row["id"])
-                    if include_recent and row["attempts"] else ()
+                    if include_recent and row["attempts"]
+                    else ()
                 ),
+                selection_group=row["group_key"],
+                normalized_stem=normalize_match_text(row["question_text"]),
             )
             for row in rows
         )
@@ -63,7 +72,8 @@ class QuizRepository(SQLiteRepository):
     def _recent_attempts(self, question_id: int) -> tuple[AttemptHistory, ...]:
         return tuple(
             AttemptHistory(
-                bool(attempt["is_correct"]), attempt["confidence"],
+                bool(attempt["is_correct"]),
+                attempt["confidence"],
                 attempt["attempted_at"],
             )
             for attempt in self._conn.execute(
@@ -93,25 +103,67 @@ class QuizRepository(SQLiteRepository):
                VALUES (:certification_id, :started_at, :target_year, :mode,
                        :strategy, :requested_count, 'interactive')""",
             {
-                "certification_id": cert_id, "started_at": started_at,
-                "target_year": target_year, "mode": mode,
-                "strategy": strategy, "requested_count": requested_count,
+                "certification_id": cert_id,
+                "started_at": started_at,
+                "target_year": target_year,
+                "mode": mode,
+                "strategy": strategy,
+                "requested_count": requested_count,
             },
         )
         session_id = int(cursor.lastrowid)
         for position, (question_id, weight) in enumerate(
-            selected_questions, 1,
+            selected_questions,
+            1,
         ):
             self._conn.execute(
                 """INSERT INTO session_questions(
                        session_id, question_id, position, selection_weight)
                    VALUES (:session_id, :question_id, :position, :weight)""",
                 {
-                    "session_id": session_id, "question_id": question_id,
-                    "position": position, "weight": weight,
+                    "session_id": session_id,
+                    "question_id": question_id,
+                    "position": position,
+                    "weight": weight,
                 },
             )
         return session_id
+
+    def answer_ids(self, question_ids: Sequence[int]) -> dict[int, list[int]]:
+        """Load all canonical answer IDs in a stable order for shuffling."""
+        if not question_ids:
+            return {}
+        params = {f"q{index}": qid for index, qid in enumerate(question_ids)}
+        binds = ",".join(f":{key}" for key in params)
+        grouped: dict[int, list[int]] = {}
+        for row in self._conn.execute(
+            f"""SELECT id,question_id FROM answers WHERE question_id IN ({binds})
+                ORDER BY question_id,display_order""",
+            params,
+        ):
+            grouped.setdefault(row["question_id"], []).append(row["id"])
+        return grouped
+
+    def save_answer_order(
+        self,
+        session_id: int,
+        question_id: int,
+        answer_ids: Sequence[int],
+    ) -> None:
+        """Save a session's complete answer permutation in its transaction."""
+        self._conn.executemany(
+            """INSERT INTO session_answers(session_id,question_id,answer_id,display_order)
+               VALUES (:session_id,:question_id,:answer_id,:display_order)""",
+            (
+                {
+                    "session_id": session_id,
+                    "question_id": question_id,
+                    "answer_id": answer_id,
+                    "display_order": order,
+                }
+                for order, answer_id in enumerate(answer_ids, 1)
+            ),
+        )
 
     def lock_session(self, session_id: int) -> None:
         """Acquire a write lock before checking session state."""
@@ -133,9 +185,9 @@ class QuizRepository(SQLiteRepository):
     def questions(self, session_id: int) -> tuple[Question, ...]:
         """Load a session's questions and choices in their saved order."""
         return tuple(
-            self._question(row)
+            self._question(row, session_id)
             for row in self._conn.execute(
-                """SELECT q.id, q.question_text, q.question_type
+                """SELECT q.id, q.question_text, q.question_type, q.select_count
                    FROM session_questions sq JOIN questions q
                    ON q.id=sq.question_id WHERE sq.session_id=:session_id
                    ORDER BY sq.position""",
@@ -146,7 +198,7 @@ class QuizRepository(SQLiteRepository):
     def question(self, session_id: int, question_id: int) -> Question:
         """Load a question only if it belongs to the specified session."""
         row = self._conn.execute(
-            """SELECT q.id, q.question_text, q.question_type
+            """SELECT q.id, q.question_text, q.question_type, q.select_count
                FROM session_questions sq
                JOIN questions q ON q.id=sq.question_id
                WHERE sq.session_id=:session_id AND q.id=:question_id""",
@@ -154,35 +206,43 @@ class QuizRepository(SQLiteRepository):
         ).fetchone()
         if row is None:
             raise ValueError("Question is not part of this session.")
-        return self._question(row)
+        return self._question(row, session_id)
 
-    def _question(self, row: sqlite3.Row) -> Question:
+    def _question(self, row: sqlite3.Row, session_id: int) -> Question:
         options = self._conn.execute(
-            """SELECT id, option_label, option_text, is_correct, rationale
-               FROM options WHERE question_id=:question_id
-               ORDER BY option_order""",
-            {"question_id": row["id"]},
+            """SELECT a.id,a.answer_text,a.is_correct,a.rationale,sa.display_order
+               FROM session_answers sa JOIN answers a ON a.id=sa.answer_id
+               WHERE sa.session_id=:session_id AND sa.question_id=:question_id
+               ORDER BY sa.display_order""",
+            {"session_id": session_id, "question_id": row["id"]},
         ).fetchall()
         return Question(
-            row["id"], row["question_text"], row["question_type"],
+            row["id"],
+            row["question_text"],
+            row["question_type"],
             tuple(
                 Option(
                     option["id"],
-                    (option["option_label"] or chr(65 + index)).upper(),
-                    option["option_text"], bool(option["is_correct"]),
+                    chr(64 + option["display_order"]),
+                    option["answer_text"],
+                    bool(option["is_correct"]),
                     option["rationale"],
                 )
-                for index, option in enumerate(options)
+                for option in options
             ),
+            row["select_count"],
         )
 
     def has_attempt(self, session_id: int, question_id: int) -> bool:
         """Return whether this session has already recorded this question."""
-        return self._conn.execute(
-            """SELECT 1 FROM attempts
+        return (
+            self._conn.execute(
+                """SELECT 1 FROM attempts
                WHERE session_id=:session_id AND question_id=:question_id""",
-            {"session_id": session_id, "question_id": question_id},
-        ).fetchone() is not None
+                {"session_id": session_id, "question_id": question_id},
+            ).fetchone()
+            is not None
+        )
 
     def insert_attempt(
         self,
@@ -203,9 +263,12 @@ class QuizRepository(SQLiteRepository):
                VALUES (:session_id, :question_id, :attempted_at, :is_correct,
                        :confidence, :elapsed_ms)""",
             {
-                "session_id": session_id, "question_id": question_id,
-                "attempted_at": attempted_at, "is_correct": int(is_correct),
-                "confidence": confidence, "elapsed_ms": elapsed_ms,
+                "session_id": session_id,
+                "question_id": question_id,
+                "attempted_at": attempted_at,
+                "is_correct": int(is_correct),
+                "confidence": confidence,
+                "elapsed_ms": elapsed_ms,
             },
         )
         for option_id in sorted(selected):
@@ -217,14 +280,17 @@ class QuizRepository(SQLiteRepository):
 
     def unanswered_questions(self, session_id: int) -> tuple[int, ...]:
         """Return unanswered question IDs in session order."""
-        return tuple(row[0] for row in self._conn.execute(
-            """SELECT sq.question_id FROM session_questions sq
+        return tuple(
+            row[0]
+            for row in self._conn.execute(
+                """SELECT sq.question_id FROM session_questions sq
                WHERE sq.session_id=:session_id AND NOT EXISTS (
                    SELECT 1 FROM attempts a WHERE a.session_id=sq.session_id
                    AND a.question_id=sq.question_id)
                ORDER BY sq.position""",
-            {"session_id": session_id},
-        ))
+                {"session_id": session_id},
+            )
+        )
 
     def complete_session(self, session_id: int, completed_at: str) -> None:
         """Store the completion timestamp without committing independently."""

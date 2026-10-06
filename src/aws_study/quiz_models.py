@@ -1,4 +1,5 @@
 """Quiz data shared by presentation, behavior, and persistence code."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -23,6 +24,7 @@ class Question:
     text: str
     kind: str
     options: tuple[Option, ...]
+    select_count: int = 1
 
 
 @dataclass(frozen=True)
@@ -52,3 +54,5 @@ class QuestionHistory:
     attempt_count: int
     miss_count: int
     recent_attempts: tuple[AttemptHistory, ...]
+    selection_group: str | None = None
+    normalized_stem: str | None = None

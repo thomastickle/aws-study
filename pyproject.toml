@@ -20,4 +20,4 @@ aws-study = "aws_study.cli:main"
 package-dir = {"" = "src"}
 
 [tool.setuptools.package-data]
-aws_study = ["schema.sql"]
+aws_study = ["schema*.sql"]

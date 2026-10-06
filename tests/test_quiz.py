@@ -10,6 +10,11 @@ from pathlib import Path
 from unittest.mock import patch
 
 from aws_study.db import connect, init_db
+from study_fixture import (
+    bank as v2_bank,
+    converted_fixture,
+    question as fixture_question,
+)
 from aws_study.importers import import_internal_bank
 from aws_study.quiz import _parse_answer, _prompt_confidence, run_quiz
 from aws_study.quiz_models import AttemptHistory, QuestionHistory
@@ -28,29 +33,33 @@ class QuizTests(unittest.TestCase):
             "schema_version": 1,
             "questions": [
                 {
-                    "source": "synthetic", "source_index": index,
+                    "source": "synthetic",
+                    "source_index": index,
                     "question": f"Synthetic question {index}?",
-                    "question_type": kind, "dedup_role": "canonical",
+                    "question_type": kind,
+                    "dedup_role": "canonical",
                     "options": [
                         {
-                            "letter": label, "label": f"Choice {label}",
-                            "correct": label in correct, "selected": False,
+                            "letter": label,
+                            "label": f"Choice {label}",
+                            "correct": label in correct,
+                            "selected": False,
                             "rationale": f"Explanation {label}",
                         }
                         for label in "ABCDEF"
                     ],
                 }
                 for index, kind, correct in [
-                    (1, "single_select", "B"), (2, "multi_select", "AF"),
+                    (1, "single_select", "B"),
+                    (2, "multi_select", "AF"),
                 ]
             ],
         }
         bank_path = self.path / "bank.json"
-        bank_path.write_text(json.dumps(bank), encoding="utf-8")
-        import_internal_bank(
-            self.conn, bank_path, cert_code="CLF-C02", observed_year=2026,
-            verified_year=2026, import_baseline_attempts=False,
+        bank_path.write_text(
+            json.dumps(converted_fixture(bank)), encoding="utf-8"
         )
+        import_internal_bank(self.conn, bank_path)
         self.cert_id = self.conn.execute(
             "SELECT id FROM certifications",
         ).fetchone()[0]
@@ -63,8 +72,11 @@ class QuizTests(unittest.TestCase):
 
     def session(self, **overrides):
         settings = {
-            "count": 2, "target_year": 2026, "mode": "exam",
-            "strategy": "random", "seed": 1,
+            "count": 2,
+            "target_year": 2026,
+            "mode": "exam",
+            "strategy": "random",
+            "seed": 1,
         }
         settings.update(overrides)
         return self.service.create_session(self.cert_id, **settings)
@@ -83,10 +95,15 @@ class QuizTests(unittest.TestCase):
         )
         self.assertEqual(len(questions), 2)
         self.assertEqual(
-            [row[0] for row in self.conn.execute(
-                "SELECT position FROM session_questions "
-                "WHERE session_id=? ORDER BY position", (first,),
-            )], [1, 2],
+            [
+                row[0]
+                for row in self.conn.execute(
+                    "SELECT position FROM session_questions "
+                    "WHERE session_id=? ORDER BY position",
+                    (first,),
+                )
+            ],
+            [1, 2],
         )
         restored = connect(self.path / "study.db")
         try:
@@ -106,11 +123,15 @@ class QuizTests(unittest.TestCase):
         self.assertEqual(
             self.conn.execute(
                 "SELECT COUNT(*) FROM sessions",
-            ).fetchone()[0], 0,
+            ).fetchone()[0],
+            0,
         )
-        self.assertEqual(self.conn.execute(
-            "SELECT COUNT(*) FROM session_questions",
-        ).fetchone()[0], 0)
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT COUNT(*) FROM session_questions",
+            ).fetchone()[0],
+            0,
+        )
         self.assertFalse(self.conn.in_transaction)
         self.conn.execute("DROP TRIGGER reject_question")
         self.assertEqual(len(self.service.questions(self.session())), 2)
@@ -121,7 +142,11 @@ class QuizTests(unittest.TestCase):
         for question in questions:
             selected = set(reversed(sorted(self.correct_ids(question))))
             result = self.service.record_answer(
-                session_id, question.id, selected, None, 125,
+                session_id,
+                question.id,
+                selected,
+                None,
+                125,
             )
             self.assertTrue(result.is_correct)
             self.assertEqual(result.selected_options, result.correct_options)
@@ -131,10 +156,13 @@ class QuizTests(unittest.TestCase):
             ).fetchone()
             self.assertIsNone(attempt["confidence"])
             self.assertEqual(attempt["elapsed_ms"], 125)
-            stored_ids = {row[0] for row in self.conn.execute(
-                "SELECT option_id FROM attempt_options WHERE attempt_id=?",
-                (attempt["id"],),
-            )}
+            stored_ids = {
+                row[0]
+                for row in self.conn.execute(
+                    "SELECT option_id FROM attempt_options WHERE attempt_id=?",
+                    (attempt["id"],),
+                )
+            }
             self.assertEqual(stored_ids, selected)
         self.service.finish_session(session_id)
         self.assertTrue(self.repository.is_complete(session_id))
@@ -147,24 +175,43 @@ class QuizTests(unittest.TestCase):
         self.service.finish_session(session_id)
 
     def test_multi_select_exact_set_and_extra_single_choices(self):
-        for selected_labels in ("A", "AFB", "FA"):
+        for selection in ("missing", "extra", "reversed"):
             session_id = self.session()
             question = next(
-                q for q in self.service.questions(session_id)
+                q
+                for q in self.service.questions(session_id)
                 if q.kind == "multi_select"
             )
+            correct_labels = [o.label for o in question.options if o.correct]
+            wrong_label = next(
+                o.label for o in question.options if not o.correct
+            )
+            if selection == "missing":
+                selected_labels = correct_labels[:1]
+            elif selection == "extra":
+                selected_labels = correct_labels + [wrong_label]
+            else:
+                selected_labels = list(reversed(correct_labels))
             selected = {
                 o.id for o in question.options if o.label in selected_labels
             }
             result = self.service.record_answer(
-                session_id, question.id, selected, "medium", 1,
+                session_id,
+                question.id,
+                selected,
+                "medium",
+                1,
             )
-            self.assertEqual(result.is_correct, selected_labels == "FA")
+            self.assertEqual(result.is_correct, selection == "reversed")
         session_id = self.session()
         single = self.service.questions(session_id)[0]
         # Preserve incorrect scoring for excess single-select choices.
         result = self.service.record_answer(
-            session_id, single.id, {o.id for o in single.options[:2]}, None, 1,
+            session_id,
+            single.id,
+            {o.id for o in single.options[:2]},
+            None,
+            1,
         )
         self.assertFalse(result.is_correct)
 
@@ -180,57 +227,100 @@ class QuizTests(unittest.TestCase):
         """)
         with self.assertRaisesRegex(sqlite3.IntegrityError, "option failure"):
             self.service.record_answer(
-                session_id, question.id, selected, "low", 200,
+                session_id,
+                question.id,
+                selected,
+                "low",
+                200,
             )
         for table in ("attempts", "attempt_options"):
-            self.assertEqual(self.conn.execute(
-                f"SELECT COUNT(*) FROM {table}",
-            ).fetchone()[0], 0)
+            self.assertEqual(
+                self.conn.execute(
+                    f"SELECT COUNT(*) FROM {table}",
+                ).fetchone()[0],
+                0,
+            )
         self.assertFalse(self.conn.in_transaction)
         self.conn.execute("DROP TRIGGER reject_option")
-        self.assertTrue(self.service.record_answer(
-            session_id, question.id, selected, "low", 200,
-        ).is_correct)
-        self.assertEqual(self.conn.execute(
-            "SELECT COUNT(*) FROM attempt_options",
-        ).fetchone()[0], 2)
+        self.assertTrue(
+            self.service.record_answer(
+                session_id,
+                question.id,
+                selected,
+                "low",
+                200,
+            ).is_correct
+        )
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT COUNT(*) FROM attempt_options",
+            ).fetchone()[0],
+            2,
+        )
 
     def test_validation_prevents_invalid_and_duplicate_attempts(self):
         session_id = self.session()
         question, other = self.service.questions(session_id)
         for selected, confidence, elapsed in [
-            (set(), None, 0), ({other.options[0].id}, None, 0),
+            (set(), None, 0),
+            ({other.options[0].id}, None, 0),
             (self.correct_ids(question), "unknown", 0),
             (self.correct_ids(question), None, -1),
         ]:
             with self.assertRaises(ValueError):
                 self.service.record_answer(
-                    session_id, question.id, selected, confidence, elapsed,
+                    session_id,
+                    question.id,
+                    selected,
+                    confidence,
+                    elapsed,
                 )
-        self.assertEqual(self.conn.execute(
-            "SELECT COUNT(*) FROM attempts",
-        ).fetchone()[0], 0)
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT COUNT(*) FROM attempts",
+            ).fetchone()[0],
+            0,
+        )
         self.service.record_answer(
-            session_id, question.id, self.correct_ids(question), "high", 1,
+            session_id,
+            question.id,
+            self.correct_ids(question),
+            "high",
+            1,
         )
         with self.assertRaisesRegex(ValueError, "already been answered"):
             self.service.record_answer(
-                session_id, question.id, self.correct_ids(question), None, 1,
+                session_id,
+                question.id,
+                self.correct_ids(question),
+                None,
+                1,
             )
         with self.assertRaisesRegex(ValueError, "every question"):
             self.service.finish_session(session_id)
         self.assertFalse(self.repository.is_complete(session_id))
         self.service.record_answer(
-            session_id, other.id, self.correct_ids(other), None, 1,
+            session_id,
+            other.id,
+            self.correct_ids(other),
+            None,
+            1,
         )
         self.service.finish_session(session_id)
         with self.assertRaisesRegex(ValueError, "already complete"):
             self.service.record_answer(
-                session_id, question.id, self.correct_ids(question), None, 1,
+                session_id,
+                question.id,
+                self.correct_ids(question),
+                None,
+                1,
             )
-        self.assertEqual(self.conn.execute(
-            "SELECT COUNT(*) FROM attempts",
-        ).fetchone()[0], 2)
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT COUNT(*) FROM attempts",
+            ).fetchone()[0],
+            2,
+        )
 
     def test_question_membership_and_missing_sessions(self):
         session_id = self.session(count=1)
@@ -251,63 +341,81 @@ class QuizTests(unittest.TestCase):
 
     def test_bad_settings_and_freshness_do_not_create_sessions(self):
         for settings in (
-            {"count": 0}, {"count": -1}, {"mode": "invalid"},
-            {"strategy": "invalid"}, {"target_year": 2027},
+            {"count": 0},
+            {"count": -1},
+            {"mode": "invalid"},
+            {"strategy": "invalid"},
+            {"target_year": 2027},
         ):
             with self.assertRaises(ValueError):
                 self.session(**settings)
-        self.assertEqual(self.conn.execute(
-            "SELECT COUNT(*) FROM sessions",
-        ).fetchone()[0], 0)
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT COUNT(*) FROM sessions",
+            ).fetchone()[0],
+            0,
+        )
         session_id = self.session(target_year=2027, include_unverified=True)
         self.assertEqual(len(self.service.questions(session_id)), 2)
 
-    def test_labels_are_uppercase_and_missing_labels_use_option_order(self):
-        self.conn.execute("UPDATE options SET option_label=NULL")
-        self.conn.commit()
-        question = self.service.questions(self.session())[0]
-        self.assertEqual([o.label for o in question.options], list("ABCDEF"))
-        # Restore lowercase stored labels to exercise normalization as well.
-        for option in question.options:
-            self.conn.execute(
-                "UPDATE options SET option_label=? WHERE id=?",
-                (option.label.lower(), option.id),
-            )
-        self.conn.commit()
+    def test_labels_are_generated_from_saved_session_order(self):
         question = self.service.questions(self.session())[0]
         self.assertEqual([o.label for o in question.options], list("ABCDEF"))
 
     def test_cli_study_and_exam_feedback_timing_and_score(self):
         for mode in ("study", "exam"):
             output = StringIO()
-            answers = iter(("a", "Confident", "f ;,, A a", ""))
             calls = 0
+            selected_first = ""
 
             def answer(prompt):
-                nonlocal calls
-                if calls == 2:
-                    text = output.getvalue()
-                    self.assertEqual("Correct answer(s):" in text,
-                                     mode == "study")
-                    self.assertEqual("Explanation B" in text,
-                                     mode == "study")
+                nonlocal calls, selected_first
+                call = calls
                 calls += 1
-                return next(answers)
+                if call in (1, 3):
+                    return "Confident" if call == 1 else ""
+                sid = self.conn.execute(
+                    "SELECT MAX(id) FROM sessions"
+                ).fetchone()[0]
+                questions = self.service.questions(sid)
+                if call == 0:
+                    wrong = next(
+                        o for o in questions[0].options if not o.correct
+                    )
+                    selected_first = f"{wrong.label}. {wrong.text}"
+                    return wrong.label.lower()
+                text = output.getvalue()
+                self.assertEqual("Correct answer(s):" in text, mode == "study")
+                self.assertEqual("Explanation B" in text, mode == "study")
+                labels = [o.label for o in questions[1].options if o.correct]
+                return " ;,, ".join(reversed(labels)).lower() + " " + labels[0]
 
             with patch("builtins.input", side_effect=answer):
                 with redirect_stdout(output):
                     session_id = run_quiz(
-                        self.service, self.cert_id, count=2, target_year=2026,
-                        mode=mode, strategy="random", seed=1,
+                        self.service,
+                        self.cert_id,
+                        count=2,
+                        target_year=2026,
+                        mode=mode,
+                        strategy="random",
+                        seed=1,
                     )
             self.assertIn("Score: 1/2 (50.0%)", output.getvalue())
+            self.assertIn("Select 2 answers", output.getvalue())
             if mode == "exam":
-                self.assertIn("Q1: ✗ selected A. Choice A", output.getvalue())
+                self.assertIn(
+                    f"Q1: ✗ selected {selected_first}", output.getvalue()
+                )
             self.assertTrue(self.repository.is_complete(session_id))
-            confidences = [row[0] for row in self.conn.execute(
-                "SELECT confidence FROM attempts WHERE session_id=? "
-                "ORDER BY id", (session_id,),
-            )]
+            confidences = [
+                row[0]
+                for row in self.conn.execute(
+                    "SELECT confidence FROM attempts WHERE session_id=? "
+                    "ORDER BY id",
+                    (session_id,),
+                )
+            ]
             self.assertEqual(confidences, ["high", None])
 
     def test_cli_interruption_keeps_previous_answer_without_completion(self):
@@ -317,23 +425,36 @@ class QuizTests(unittest.TestCase):
         ):
             with self.assertRaises(KeyboardInterrupt):
                 run_quiz(
-                    self.service, self.cert_id, count=2, target_year=2026,
-                    mode="exam", strategy="random", seed=1,
+                    self.service,
+                    self.cert_id,
+                    count=2,
+                    target_year=2026,
+                    mode="exam",
+                    strategy="random",
+                    seed=1,
                 )
-        self.assertEqual(self.conn.execute(
-            "SELECT COUNT(*) FROM attempts",
-        ).fetchone()[0], 1)
-        self.assertIsNone(self.conn.execute(
-            "SELECT completed_at FROM sessions",
-        ).fetchone()[0])
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT COUNT(*) FROM attempts",
+            ).fetchone()[0],
+            1,
+        )
+        self.assertIsNone(
+            self.conn.execute(
+                "SELECT completed_at FROM sessions",
+            ).fetchone()[0]
+        )
         self.assertFalse(self.conn.in_transaction)
 
     def test_answer_and_confidence_shortcuts_are_preserved(self):
         self.assertEqual(_parse_answer("F ;, a a", list("ABCDEF")), {0, 5})
         self.assertEqual(_parse_answer("1, 6", list("ABCDEF")), {0, 5})
         for raw, expected in (
-            ("C", "high"), ("Educated Guess", "medium"),
-            ("u", "low"), ("Unsure", "low"), ("", None),
+            ("C", "high"),
+            ("Educated Guess", "medium"),
+            ("u", "low"),
+            ("Unsure", "low"),
+            ("", None),
         ):
             with patch("builtins.input", return_value=raw):
                 self.assertEqual(_prompt_confidence(), expected)
@@ -345,7 +466,8 @@ class QuizTests(unittest.TestCase):
         )
         self.conn.execute("UPDATE questions SET question_text=?", (text,))
         self.conn.execute(
-            "UPDATE options SET option_text=?, rationale=?", (text, text),
+            "UPDATE answers SET answer_text=?, rationale=?",
+            (text, text),
         )
         self.conn.commit()
         for mode in ("exam", "study"):
@@ -358,34 +480,58 @@ class QuizTests(unittest.TestCase):
                     return next(answers)
 
                 with (
-                    patch("aws_study.terminal.shutil.get_terminal_size",
-                          return_value=os.terminal_size((52, 24))),
+                    patch(
+                        "aws_study.terminal.shutil.get_terminal_size",
+                        return_value=os.terminal_size((52, 24)),
+                    ),
                     patch("builtins.input", side_effect=answer),
                     redirect_stdout(StringIO()) as output,
                 ):
                     session_id = run_quiz(
-                        self.service, self.cert_id, count=2, target_year=2026,
-                        mode=mode, strategy="random", seed=1,
+                        self.service,
+                        self.cert_id,
+                        count=2,
+                        target_year=2026,
+                        mode=mode,
+                        strategy="random",
+                        seed=1,
                     )
                 lines = output.getvalue().splitlines()
                 self.assertTrue(all(len(line) <= 50 for line in lines))
-                self.assertTrue(all(len(line) <= 50 for prompt in prompts
-                                    for line in prompt.splitlines()))
-                self.assertIn("     across a narrow terminal", output.getvalue())
-                self.assertEqual("rationale:" in output.getvalue(),
-                                 mode == "study")
+                self.assertTrue(
+                    all(
+                        len(line) <= 50
+                        for prompt in prompts
+                        for line in prompt.splitlines()
+                    )
+                )
+                self.assertIn(
+                    "     across a narrow terminal", output.getvalue()
+                )
+                self.assertEqual(
+                    "rationale:" in output.getvalue(), mode == "study"
+                )
                 self.assertEqual("Q1:" in output.getvalue(), mode == "exam")
                 self.assertTrue(self.repository.is_complete(session_id))
 
     def test_invalid_wrap_width_does_not_create_a_session(self):
         with self.assertRaisesRegex(ValueError, "Wrap width must be"):
             run_quiz(
-                self.service, self.cert_id, count=2, target_year=2026,
-                mode="exam", strategy="random", seed=1, width=0,
+                self.service,
+                self.cert_id,
+                count=2,
+                target_year=2026,
+                mode="exam",
+                strategy="random",
+                seed=1,
+                width=0,
             )
-        self.assertEqual(self.conn.execute(
-            "SELECT COUNT(*) FROM sessions",
-        ).fetchone()[0], 0)
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT COUNT(*) FROM sessions",
+            ).fetchone()[0],
+            0,
+        )
 
 
 class SelectionTests(unittest.TestCase):
@@ -408,17 +554,25 @@ class SelectionTests(unittest.TestCase):
             self.assertEqual(weights[2], 11)
             self.assertAlmostEqual(weights[3], 1.8)
             self.assertEqual(
-                [c.question_id for c in rank_candidates(history,
-                                                       strategy="new")], [1],
+                [
+                    c.question_id
+                    for c in rank_candidates(history, strategy="new")
+                ],
+                [1],
             )
             self.assertEqual(
-                [c.question_id for c in rank_candidates(history,
-                                                       strategy="weak")], [2],
+                [
+                    c.question_id
+                    for c in rank_candidates(history, strategy="weak")
+                ],
+                [2],
             )
-            self.assertTrue(all(
-                c.weight == 1 for c in rank_candidates(history,
-                                                      strategy="random")
-            ))
+            self.assertTrue(
+                all(
+                    c.weight == 1
+                    for c in rank_candidates(history, strategy="random")
+                )
+            )
 
 
 if __name__ == "__main__":

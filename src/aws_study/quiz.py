@@ -26,7 +26,9 @@ def _parse_answer(raw: str, labels: list[str]) -> set[int]:
 
 
 def _prompt_answer(
-    labels: list[str], *, width: int = DEFAULT_WIDTH,
+    labels: list[str],
+    *,
+    width: int = DEFAULT_WIDTH,
 ) -> set[int]:
     while True:
         try:
@@ -74,8 +76,13 @@ def run_quiz(
     if width < 1:
         raise ValueError("Wrap width must be at least 1.")
     session_id = service.create_session(
-        cert_id, count=count, target_year=target_year, mode=mode,
-        strategy=strategy, seed=seed, include_unverified=include_unverified,
+        cert_id,
+        count=count,
+        target_year=target_year,
+        mode=mode,
+        strategy=strategy,
+        seed=seed,
+        include_unverified=include_unverified,
     )
     questions = service.questions(session_id)
     pending_results: list[AnswerResult] = []
@@ -84,21 +91,26 @@ def run_quiz(
         prefix = f"[{position}/{len(questions)}] "
         print()
         print_wrapped(
-            question.text, preferred_width=width, initial_indent=prefix,
+            question.text,
+            preferred_width=width,
+            initial_indent=prefix,
             subsequent_indent=" " * len(prefix),
         )
         print()
         for option in question.options:
             prefix = f"  {option.label}. "
             print_wrapped(
-                option.text, preferred_width=width, initial_indent=prefix,
+                option.text,
+                preferred_width=width,
+                initial_indent=prefix,
                 subsequent_indent=" " * len(prefix),
             )
         if question.kind == "multi_select":
             print_wrapped(
-                "(Select all that apply; enter uppercase or lowercase "
+                f"(Select {question.select_count} answers; enter uppercase or lowercase "
                 "letters separated by spaces, commas, or semicolons.)",
-                preferred_width=width, initial_indent="  ",
+                preferred_width=width,
+                initial_indent="  ",
                 subsequent_indent="  ",
             )
 
@@ -107,9 +119,11 @@ def run_quiz(
         elapsed_ms = int((time.monotonic() - start) * 1000)
         confidence = _prompt_confidence(width=width)
         result = service.record_answer(
-            session_id, question.id,
+            session_id,
+            question.id,
             {question.options[index].id for index in selected},
-            confidence, elapsed_ms,
+            confidence,
+            elapsed_ms,
         )
         pending_results.append(result)
 
@@ -121,13 +135,15 @@ def run_quiz(
             print_wrapped(
                 "Correct answer(s): "
                 + "; ".join(_option_texts(result.correct_options)),
-                preferred_width=width, subsequent_indent="  ",
+                preferred_width=width,
+                subsequent_indent="  ",
             )
             for option in question.options:
                 if option.rationale:
                     prefix = f"  {option.label} rationale: "
                     print_wrapped(
-                        option.rationale, preferred_width=width,
+                        option.rationale,
+                        preferred_width=width,
                         initial_indent=prefix,
                         subsequent_indent=" " * len(prefix),
                     )
@@ -151,7 +167,8 @@ def run_quiz(
                 print_wrapped(
                     f"Q{index}: ✗ selected {selected_text} "
                     f"| correct {correct_text}",
-                    preferred_width=width, initial_indent="  ",
+                    preferred_width=width,
+                    initial_indent="  ",
                     subsequent_indent="      ",
                 )
     return session_id

@@ -1,4 +1,5 @@
 """Aggregate study-history queries for the statistics screen."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -13,6 +14,7 @@ class TopicStatistics:
     topic: str
     attempts: int
     misses: int
+    area: str = "General AWS"
 
 
 @dataclass(frozen=True)
@@ -34,7 +36,7 @@ class StatisticsRepository(SQLiteRepository):
         question_count = self._conn.execute(
             """SELECT COUNT(*) FROM questions
                WHERE certification_id=:certification_id
-                 AND is_active=1 AND dedup_role='canonical'""",
+                 AND is_active=1""",
             params,
         ).fetchone()[0]
         totals = self._conn.execute(
@@ -44,18 +46,28 @@ class StatisticsRepository(SQLiteRepository):
             params,
         ).fetchone()
         topics = self._conn.execute(
-            """SELECT COALESCE(q.topic, 'General AWS') topic,
+            """SELECT COALESCE(q.area, 'General AWS') area,
+                      COALESCE(q.topic, 'Unclassified') topic,
                       COUNT(a.id) attempts,
                       SUM(CASE WHEN a.is_correct=0 THEN 1 ELSE 0 END) misses
                FROM attempts a JOIN questions q ON q.id=a.question_id
                WHERE q.certification_id=:certification_id
-               GROUP BY COALESCE(q.topic, 'General AWS') HAVING misses>0
+               GROUP BY COALESCE(q.area, 'General AWS'),
+                        COALESCE(q.topic, 'Unclassified') HAVING misses>0
                ORDER BY (1.0*misses/attempts) DESC, misses DESC""",
             params,
         ).fetchall()
         return StudyStatistics(
-            question_count, totals["attempts"], totals["correct"],
-            tuple(TopicStatistics(
-                row["topic"], row["attempts"], row["misses"],
-            ) for row in topics),
+            question_count,
+            totals["attempts"],
+            totals["correct"],
+            tuple(
+                TopicStatistics(
+                    row["topic"],
+                    row["attempts"],
+                    row["misses"],
+                    row["area"],
+                )
+                for row in topics
+            ),
         )

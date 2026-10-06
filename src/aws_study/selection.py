@@ -17,6 +17,8 @@ class Candidate:
     question_id: int
     weight: float
     reason: str
+    selection_group: str | None = None
+    normalized_stem: str | None = None
 
 
 def _parse_dt(s: str | None) -> datetime | None:
@@ -35,19 +37,21 @@ def candidates(
     target_year: int | None,
     strategy: str,
     include_unverified: bool = False,
-    canonical_only: bool = True,
 ) -> list[Candidate]:
     """Load and rank candidates using the existing connection-based API."""
     history = QuizRepository(conn).candidate_history(
-        cert_id, target_year=target_year,
-        include_unverified=include_unverified, canonical_only=canonical_only,
+        cert_id,
+        target_year=target_year,
+        include_unverified=include_unverified,
         include_recent=strategy not in ("random", "new"),
     )
     return rank_candidates(history, strategy=strategy)
 
 
 def rank_candidates(
-    history: Sequence[QuestionHistory], *, strategy: str,
+    history: Sequence[QuestionHistory],
+    *,
+    strategy: str,
 ) -> list[Candidate]:
     """Calculate selection weights from history without database access."""
     out: list[Candidate] = []
@@ -57,7 +61,15 @@ def rank_candidates(
         n = question.attempt_count
         misses = question.miss_count
         if strategy == "random":
-            out.append(Candidate(qid, 1.0, "random"))
+            out.append(
+                Candidate(
+                    qid,
+                    1.0,
+                    "random",
+                    question.selection_group,
+                    question.normalized_stem,
+                )
+            )
             continue
         if strategy == "new" and n > 0:
             continue
@@ -110,16 +122,24 @@ def rank_candidates(
                 weight *= 0.45
                 reasons.append("3+ correct streak")
 
-        out.append(Candidate(
-            qid, max(0.2, weight), ", ".join(reasons) or "baseline",
-        ))
+        out.append(
+            Candidate(
+                qid,
+                max(0.2, weight),
+                ", ".join(reasons) or "baseline",
+                question.selection_group,
+                question.normalized_stem,
+            )
+        )
     return out
 
 
 def weighted_sample(
-    items: list[Candidate], count: int, seed: int | None = None,
+    items: list[Candidate],
+    count: int,
+    seed: int | None = None,
 ) -> list[Candidate]:
-    """Pick weighted questions without replacement, optionally reproducibly."""
+    """Pick distinct questions, stems, and curated variant groups per session."""
     rng = random.Random(seed)
     pool = list(items)
     chosen: list[Candidate] = []
@@ -136,5 +156,19 @@ def weighted_sample(
                 if acc >= needle:
                     pick = i
                     break
-        chosen.append(pool.pop(pick))
+        selected = pool.pop(pick)
+        chosen.append(selected)
+        pool = [
+            candidate
+            for candidate in pool
+            if candidate.question_id != selected.question_id
+            and (
+                selected.selection_group is None
+                or candidate.selection_group != selected.selection_group
+            )
+            and (
+                selected.normalized_stem is None
+                or candidate.normalized_stem != selected.normalized_stem
+            )
+        ]
     return chosen
