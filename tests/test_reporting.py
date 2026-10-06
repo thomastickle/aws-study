@@ -13,6 +13,8 @@ from aws_study.importers import import_internal_bank
 from aws_study.quiz import run_quiz
 from aws_study.quiz_repository import QuizRepository
 from aws_study.quiz_service import QuizService
+from aws_study.report_repository import ReportRepository
+from aws_study.report_service import ReportService
 from aws_study.reporting import write_report_bundle
 
 
@@ -22,6 +24,7 @@ class ReportingTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.conn = connect(self.root / "study.db")
         init_db(self.conn)
+        self.reports = ReportService(ReportRepository(self.conn))
         bank = {
             "schema_version": 1,
             "questions": [{
@@ -67,7 +70,7 @@ class ReportingTests(unittest.TestCase):
 
     def test_named_folder_contains_complete_bundle(self):
         parent = self.root / "exports"
-        paths = write_report_bundle(self.conn, self.session_id, parent)
+        paths = write_report_bundle(self.reports.bundle(self.session_id), parent)
         folder = parent / "CLF-C02" / "20261006-143012"
         self.assertEqual({path.parent for path in paths.values()}, {folder})
         self.assertEqual({path.name for path in folder.iterdir()},
@@ -88,9 +91,9 @@ class ReportingTests(unittest.TestCase):
 
     def test_same_second_exports_preserve_previous_files(self):
         parent = self.root / "exports"
-        first = write_report_bundle(self.conn, self.session_id, parent)
+        first = write_report_bundle(self.reports.bundle(self.session_id), parent)
         first["report"].write_text("Previous report", encoding="utf-8")
-        second = write_report_bundle(self.conn, self.session_id, parent)
+        second = write_report_bundle(self.reports.bundle(self.session_id), parent)
         self.assertNotEqual(first["report"].parent, second["report"].parent)
         self.assertEqual(second["report"].parent.name,
                          "20261006-143012-2")
@@ -112,7 +115,7 @@ class ReportingTests(unittest.TestCase):
         )
         self.conn.commit()
         paths = write_report_bundle(
-            self.conn, self.session_id, self.root / "exports",
+            self.reports.bundle(self.session_id), self.root / "exports",
         )
         self.assertEqual(
             paths["report"].parent,
@@ -129,7 +132,7 @@ class ReportingTests(unittest.TestCase):
         )
         self.conn.commit()
         paths = write_report_bundle(
-            self.conn, self.session_id, self.root / "exports",
+            self.reports.bundle(self.session_id), self.root / "exports",
         )
         self.assertEqual(paths["report"].parent.parent.name, "SAA-C03")
         context = json.loads(paths["context"].read_text(encoding="utf-8"))
@@ -142,14 +145,15 @@ class ReportingTests(unittest.TestCase):
         )
         self.conn.commit()
         parent = self.root / "exports"
-        paths = write_report_bundle(self.conn, self.session_id, parent)
+        paths = write_report_bundle(self.reports.bundle(self.session_id), parent)
         self.assertEqual(paths["report"].parent.parent.parent, parent)
         self.assertEqual(paths["report"].parent.parent.name, "odd-cert-CLF-C02")
 
     def test_quiz_and_report_commands_use_new_default_parent(self):
         with (
             chdir(self.root),
-            patch("aws_study.cli._db", return_value=self.conn),
+            patch("aws_study.cli._db", side_effect=lambda args:
+                  connect(self.root / "study.db")),
         ):
             with redirect_stdout(StringIO()) as output:
                 main(["report", str(self.session_id)])
@@ -172,6 +176,68 @@ class ReportingTests(unittest.TestCase):
                 for folder in folders
             ))
             self.assertFalse(Path("private/report").exists())
+
+    def test_prepared_bundle_renders_without_database_connection(self):
+        bundle = self.reports.bundle(self.session_id)
+        self.conn.close()
+        paths = write_report_bundle(bundle, self.root / "offline")
+        report = paths["report"].read_text(encoding="utf-8")
+        self.assertIn("Selected: A. Wrong", report)
+        self.assertIn("Correct: B. Right", report)
+        context = json.loads(paths["context"].read_text(encoding="utf-8"))
+        self.assertEqual(len(context["questions"]), 1)
+
+    def test_latest_ignores_later_imported_baselines_and_unknown_sessions(self):
+        baseline_path = self.root / "baseline.json"
+        baseline_path.write_text(json.dumps([{
+            "source": "baseline", "question": "Synthetic baseline?",
+            "options": [{"label": "Choice", "correct": True,
+                         "selected": True}],
+        }]), encoding="utf-8")
+        import_internal_bank(
+            self.conn, baseline_path, cert_code="CLF-C02",
+        )
+        self.assertEqual(self.reports.resolve_session("latest"), self.session_id)
+        self.assertEqual(self.reports.resolve_session(str(self.session_id)),
+                         self.session_id)
+        with self.assertRaisesRegex(ValueError, "Unknown session"):
+            self.reports.bundle(9999)
+        self.conn.execute("DELETE FROM sessions WHERE source_kind='interactive'")
+        self.conn.commit()
+        with self.assertRaisesRegex(ValueError, "No interactive sessions"):
+            self.reports.resolve_session("latest")
+
+    def test_context_includes_misses_and_low_confidence_only(self):
+        extra_path = self.root / "extra.json"
+        extra_path.write_text(json.dumps([
+            {"source": "extra", "source_index": index,
+             "question": f"Synthetic extra {index}?",
+             "options": [{"letter": "A", "label": "Right", "correct": True},
+                         {"letter": "B", "label": "Wrong", "correct": False}]}
+            for index in (1, 2)
+        ]), encoding="utf-8")
+        import_internal_bank(
+            self.conn, extra_path, cert_code="CLF-C02", observed_year=2026,
+            verified_year=2026, import_baseline_attempts=False,
+        )
+        service = QuizService(QuizRepository(self.conn))
+        session_id = service.create_session(
+            self.cert_id, count=3, target_year=2026, mode="exam",
+            strategy="random", seed=1,
+        )
+        questions = service.questions(session_id)
+        for index, question in enumerate(questions):
+            selected = {o.id for o in question.options
+                        if o.correct == (index != 0)}
+            service.record_answer(
+                session_id, question.id, selected,
+                ("high", "low", "medium")[index], 0,
+            )
+        service.finish_session(session_id)
+        bundle = self.reports.bundle(session_id)
+        self.assertEqual([q["id"] for q in bundle.questions],
+                         sorted(q.id for q in questions[:2]))
+        self.assertEqual(len(bundle.data["attempts"]), 3)
 
 
 if __name__ == "__main__":

@@ -2,23 +2,14 @@
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Iterator, Sequence
-from contextlib import contextmanager
+from collections.abc import Sequence
 
 from .quiz_models import AttemptHistory, Option, Question, QuestionHistory
+from .repository import SQLiteRepository
 
 
-class QuizRepository:
+class QuizRepository(SQLiteRepository):
     """Map stored quiz data to models; the caller controls transactions."""
-
-    def __init__(self, conn: sqlite3.Connection) -> None:
-        self._conn = conn
-
-    @contextmanager
-    def transaction(self) -> Iterator[None]:
-        """Commit a successful operation or roll back all its writes."""
-        with self._conn:
-            yield
 
     def candidate_history(
         self,

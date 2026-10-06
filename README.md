@@ -234,6 +234,27 @@ Verification states supported today:
 
 The importer preserves duplicate/variant metadata from the current normalized bank. Normal quizzes use canonical questions only by default.
 
+## Code organization
+
+Command parsing and terminal output live in `cli.py` and `quiz.py`.
+Services coordinate quiz rules, source verification, and report assembly.
+`importers.py` normalizes JSON, classifies content, and coordinates imports.
+SQL belongs in the feature repositories; `db.py` only opens connections and
+initializes the schema. All repository query parameters use named binds.
+
+Repositories share a caller-owned connection and return models or documented
+export records. Their write methods do not commit: the operation that combines
+those writes owns the transaction. An import saves the entire bank atomically,
+and source verification updates provenance and questions together. CLI commands
+close their connections on success and failure.
+
+`ReportService` prepares a `ReportBundle`; `reporting.py` renders its text and
+writes the files without accessing SQLite. Statistics and source lists likewise
+receive read models rather than formatting database rows in the CLI.
+
+Regression tests use synthetic data and exercise rollback, re-imported history,
+certification isolation, report exports, and the SQL boundary.
+
 ## SQLite data model
 
 Major tables:

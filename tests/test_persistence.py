@@ -1,0 +1,203 @@
+import sqlite3
+import tempfile
+import unittest
+from contextlib import redirect_stderr, redirect_stdout
+from io import StringIO
+from pathlib import Path
+from unittest.mock import patch
+
+from aws_study.certification_repository import CertificationRepository
+from aws_study.cli import main
+from aws_study.db import connect, init_db
+from aws_study.source_repository import SourceRepository
+from aws_study.source_service import SourceService
+from aws_study.statistics_repository import StatisticsRepository
+from study_fixture import BankTestCase, question
+
+
+class PersistenceTests(BankTestCase):
+
+    def test_certification_upsert_preserves_omitted_metadata(self):
+        repository = CertificationRepository(self.conn)
+        with repository.transaction():
+            first = repository.upsert(
+                "TEST-C01", name="Synthetic", version="v1",
+                active_from_year=2026, active_to_year=2028,
+            )
+            same = repository.upsert("TEST-C01", version="v2")
+            other = repository.upsert("TEST-C01", provider="OTHER")
+        self.assertEqual(first, same)
+        self.assertNotEqual(first, other)
+        row = self.conn.execute(
+            "SELECT * FROM certifications WHERE id=?", (first,),
+        ).fetchone()
+        self.assertEqual(row["name"], "Synthetic")
+        self.assertEqual(row["version"], "v2")
+        self.assertEqual(row["active_from_year"], 2026)
+        self.assertEqual(row["active_to_year"], 2028)
+        with self.assertRaisesRegex(ValueError, "Unknown certification"):
+            repository.require_id("MISSING")
+
+    def test_source_verification_updates_only_its_certification(self):
+        self.import_questions([question()])
+        self.import_questions([question()], cert_code="OTHER-C01")
+        certification_id = CertificationRepository(self.conn).require_id(
+            "TEST-C01",
+        )
+        SourceService(SourceRepository(self.conn)).verify(
+            certification_id, "TEST-C01", "pretest",
+            year=2027, status="verified_current",
+        )
+        rows = self.conn.execute(
+            """SELECT c.code, s.verified_at, s.verification_status,
+                      q.verified_year, q.verification_status question_status
+               FROM certifications c JOIN sources s
+               ON s.certification_id=c.id JOIN questions q ON q.source_id=s.id
+               ORDER BY c.id""",
+        ).fetchall()
+        self.assertEqual(tuple(rows[0]), (
+            "TEST-C01", "2027-01-01", "verified_current", 2027,
+            "verified_current",
+        ))
+        self.assertEqual(tuple(rows[1]), (
+            "OTHER-C01", "2026-01-01", "official_current", 2026,
+            "official_current",
+        ))
+
+    def test_source_verification_failure_rolls_back_source_and_questions(self):
+        self.import_questions([question()])
+        certification_id = CertificationRepository(self.conn).require_id(
+            "TEST-C01",
+        )
+        self.conn.execute("""
+            CREATE TRIGGER reject_verification BEFORE UPDATE ON questions
+            BEGIN SELECT RAISE(ABORT, 'Synthetic verification failure'); END
+        """)
+        service = SourceService(SourceRepository(self.conn))
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "failure"):
+            service.verify(
+                certification_id, "TEST-C01", "pretest", year=2027,
+                status="verified_current",
+            )
+        self.assertEqual(tuple(self.conn.execute(
+            "SELECT verification_status, verified_at FROM sources",
+        ).fetchone()), ("official_current", "2026-01-01"))
+        self.assertEqual(self.conn.execute(
+            "SELECT verified_year FROM questions",
+        ).fetchone()[0], 2026)
+        with self.assertRaisesRegex(ValueError, "Unknown source key"):
+            service.verify(
+                certification_id, "TEST-C01", "missing", year=2027,
+                status="verified_current",
+            )
+        with self.assertRaisesRegex(ValueError, "Unknown verification status"):
+            service.verify(
+                certification_id, "TEST-C01", "pretest", year=2027,
+                status="unknown",
+            )
+
+    def test_statistics_and_source_counts_include_history_and_isolate_certs(self):
+        first = question()
+        second = question(2)
+        second["dedup_role"] = "alternate"
+        second["status"] = "Correct"
+        third = question(3)
+        self.import_questions([first, second, third])
+        self.import_questions([question()], cert_code="OTHER-C01")
+        cid = CertificationRepository(self.conn).require_id("TEST-C01")
+        self.conn.execute(
+            """UPDATE questions SET topic=CASE external_key
+                   WHEN '1' THEN 'Alpha' WHEN '2' THEN 'Alpha' ELSE NULL END,
+                   is_active=CASE WHEN external_key='3' THEN 0 ELSE 1 END
+               WHERE certification_id=?""", (cid,),
+        )
+        self.conn.commit()
+        stats = StatisticsRepository(self.conn).for_certification(cid)
+        self.assertEqual((stats.active_questions, stats.attempts, stats.correct),
+                         (1, 3, 1))
+        self.assertEqual([(t.topic, t.attempts, t.misses)
+                          for t in stats.weak_topics],
+                         [("General AWS", 1, 1), ("Alpha", 2, 1)])
+        repository = SourceRepository(self.conn)
+        with repository.transaction():
+            repository.upsert(
+                cid, "empty", name="Empty source", source_type="synthetic",
+                source_file="empty.json", observed_year=None,
+                verification_status="unverified", verified_at=None,
+            )
+        sources = repository.summaries(cid)
+        self.assertEqual([(s.key, s.question_count, s.canonical_count)
+                          for s in sources],
+                         [("pretest", 3, 2), ("empty", 0, 0)])
+
+    def test_empty_statistics_and_cli_output(self):
+        with redirect_stdout(StringIO()) as output:
+            main([
+                "--db", str(self.root / "study.db"), "cert-add",
+                "--code", "EMPTY-C01",
+            ])
+        self.assertIn("Certification id=1: AWS EMPTY-C01", output.getvalue())
+        with redirect_stdout(StringIO()) as output:
+            main([
+                "--db", str(self.root / "study.db"), "stats",
+                "--cert", "EMPTY-C01",
+            ])
+        self.assertEqual(output.getvalue(), (
+            "AWS EMPTY-C01: 0 canonical active questions\n"
+            "Attempts: 0; correct: 0\n\nWeak topics:\n"
+        ))
+
+    def test_source_commands_preserve_display_and_verified_year(self):
+        self.import_questions([question()])
+        prefix = ["--db", str(self.root / "study.db")]
+        with redirect_stdout(StringIO()) as output:
+            main(prefix + ["sources", "--cert", "TEST-C01"])
+        self.assertEqual(output.getvalue(), (
+            "pretest: Official Pretest | official | observed=2026 | "
+            "status=official_current | verified_at=2026-01-01 | "
+            "questions=1 (1 canonical)\n"
+        ))
+        with redirect_stdout(StringIO()) as output:
+            main(prefix + [
+                "source-verify", "--cert", "TEST-C01",
+                "--source-key", "pretest", "--year", "2027",
+            ])
+        self.assertEqual(output.getvalue(), (
+            "Updated pretest: status=verified_current, verified_year=2027\n"
+        ))
+        self.assertEqual(self.conn.execute(
+            "SELECT verified_year FROM questions",
+        ).fetchone()[0], 2027)
+
+
+class ConnectionLifetimeTests(unittest.TestCase):
+    def test_cli_closes_connections_on_success_and_errors(self):
+        with tempfile.TemporaryDirectory() as root:
+            for command, initialization_error in (
+                (["init"], False),
+                (["stats", "--cert", "MISSING"], False),
+                (["init"], True),
+            ):
+                with self.subTest(command=command, error=initialization_error):
+                    conn = connect(Path(root) / "study.db")
+                    with (
+                        patch("aws_study.cli.connect", return_value=conn),
+                        patch("aws_study.cli.init_db", side_effect=(
+                            sqlite3.OperationalError("Synthetic schema failure")
+                            if initialization_error else lambda c: init_db(c)
+                        )),
+                        redirect_stdout(StringIO()),
+                        redirect_stderr(StringIO()),
+                    ):
+                        if initialization_error or command[0] == "stats":
+                            with self.assertRaises(SystemExit) as error:
+                                main(command)
+                            self.assertEqual(error.exception.code, 2)
+                        else:
+                            main(command)
+                    with self.assertRaises(sqlite3.ProgrammingError):
+                        conn.execute("SELECT 1")
+
+
+if __name__ == "__main__":
+    unittest.main()
