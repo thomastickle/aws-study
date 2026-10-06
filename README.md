@@ -6,7 +6,9 @@ The first bundled private bank is the AWS Certified Cloud Practitioner material 
 
 ## Why Python for v0.1?
 
-This version uses Python 3.11+ and only the standard library at runtime. SQLite is built in, so there is no Node/Bun runtime choice, npm dependency tree, native npm SQLite module, or database server to maintain. If a browser UI is added later, the SQLite schema and quiz/report model can remain the backend contract for a TypeScript/React front end.
+This version uses Python 3.12+ and only the standard library at runtime. SQLite
+is built into Python. If a browser UI is added later, the SQLite schema and
+quiz/report model can remain the backend contract for a TypeScript/React front end.
 
 ## Safety / publishing model
 
@@ -33,6 +35,37 @@ git config core.hooksPath .githooks
 ```
 
 The pre-commit hook rejects obvious private database/question-source files if they somehow become tracked.
+
+## Tests and builds
+
+GitHub Actions runs on pushes, pull requests, and manual dispatch. It installs
+the package and runs the test suite and CLI checks on Python 3.12, 3.13, and 3.14
+across Linux, Windows, and macOS. Pip downloads and dependency wheels are cached
+between runs. After the tests pass, it builds a wheel and source archive on
+Python 3.12, checks package metadata, and attaches both files to the workflow run
+for 14 days. The test and build jobs use separate cache keys so the build tools
+can be saved independently.
+
+Python 3.12 is the development default in `.python-version`. New language or
+standard-library features must work on 3.12 unless the minimum is raised.
+
+To test locally from the repository root:
+
+```bash
+PYTHONPATH=src .venv/bin/python -m unittest discover -s tests -v
+```
+
+Packaging uses development tools downloaded separately from runtime dependencies:
+
+```bash
+python -m pip install build twine
+python -m build
+python -m twine check dist/*
+```
+
+## License
+
+The code is licensed under the [MIT License](LICENSE).
 
 ## Quick start
 

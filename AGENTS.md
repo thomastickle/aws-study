@@ -5,7 +5,9 @@ exams. The current question bank focuses on AWS Certified Cloud Practitioner.
 
 ## Requirements
 
-- Use the Python version declared in `pyproject.toml`, currently Python 3.14+.
+- Support the Python version declared in `pyproject.toml`, currently Python 3.12+.
+  Keep code compatible with that minimum unless a newer feature is needed and
+  the supported version is deliberately raised.
 - Follow PEP 8 for new and modified Python code. Keep formatting changes focused
   on the code being changed.
 - Use descriptive names and type hints for public interfaces. Document expected

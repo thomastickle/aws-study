@@ -1,12 +1,15 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77.0.3"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "aws-study"
 version = "0.1.0"
 description = "Local SQLite-backed certification question bank and adaptive mini-exam CLI"
-requires-python = ">=3.14"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.12"
 authors = [{name = "Thomas Tickle"}]
 dependencies = []
 
