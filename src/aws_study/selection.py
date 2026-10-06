@@ -17,6 +17,8 @@ class Candidate:
     question_id: int
     weight: float
     reason: str
+    selection_group: str | None = None
+    normalized_stem: str | None = None
 
 
 def _parse_dt(s: str | None) -> datetime | None:
@@ -59,7 +61,15 @@ def rank_candidates(
         n = question.attempt_count
         misses = question.miss_count
         if strategy == "random":
-            out.append(Candidate(qid, 1.0, "random"))
+            out.append(
+                Candidate(
+                    qid,
+                    1.0,
+                    "random",
+                    question.selection_group,
+                    question.normalized_stem,
+                )
+            )
             continue
         if strategy == "new" and n > 0:
             continue
@@ -117,6 +127,8 @@ def rank_candidates(
                 qid,
                 max(0.2, weight),
                 ", ".join(reasons) or "baseline",
+                question.selection_group,
+                question.normalized_stem,
             )
         )
     return out
@@ -127,7 +139,7 @@ def weighted_sample(
     count: int,
     seed: int | None = None,
 ) -> list[Candidate]:
-    """Pick weighted questions without replacement, optionally reproducibly."""
+    """Pick distinct questions, stems, and curated variant groups per session."""
     rng = random.Random(seed)
     pool = list(items)
     chosen: list[Candidate] = []
@@ -144,5 +156,19 @@ def weighted_sample(
                 if acc >= needle:
                     pick = i
                     break
-        chosen.append(pool.pop(pick))
+        selected = pool.pop(pick)
+        chosen.append(selected)
+        pool = [
+            candidate
+            for candidate in pool
+            if candidate.question_id != selected.question_id
+            and (
+                selected.selection_group is None
+                or candidate.selection_group != selected.selection_group
+            )
+            and (
+                selected.normalized_stem is None
+                or candidate.normalized_stem != selected.normalized_stem
+            )
+        ]
     return chosen

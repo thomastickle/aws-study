@@ -8,7 +8,7 @@ from importlib.resources import files
 from pathlib import Path
 
 DEFAULT_DB = Path("private/aws-study.db")
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def open_readonly(path: str | Path) -> sqlite3.Connection:
@@ -21,7 +21,7 @@ def open_readonly(path: str | Path) -> sqlite3.Connection:
 
 
 def schema_version(conn: sqlite3.Connection) -> int:
-    """Return 0 for empty, 1 for recognized legacy, or 2 for current schema."""
+    """Detect empty, legacy v1, or supported versioned study databases."""
     version = conn.execute("PRAGMA user_version").fetchone()[0]
     tables = {
         r[0]
@@ -99,7 +99,7 @@ def schema_version(conn: sqlite3.Connection) -> int:
         "attempt_options": {"attempt_id", "option_id", "selected"},
         "review_notes": {"id", "question_id", "certification_id", "note_text"},
     }
-    if version == SCHEMA_VERSION and required.keys() <= tables:
+    if version in (2, 3) and required.keys() <= tables:
         for table, expected in required.items():
             columns = {
                 r[1] for r in conn.execute(f"PRAGMA table_info({table})")
@@ -108,7 +108,18 @@ def schema_version(conn: sqlite3.Connection) -> int:
                 raise ValueError(
                     f"Incomplete v2 schema: missing columns in {table}"
                 )
-        return SCHEMA_VERSION
+        if version == 3:
+            columns = {
+                r[1]
+                for r in conn.execute(
+                    "PRAGMA table_info(question_selection_groups)"
+                )
+            }
+            if not {"question_id", "group_key"} <= columns:
+                raise ValueError(
+                    "Incomplete v3 schema: missing selection groups"
+                )
+        return version
     raise ValueError(f"Unsupported database schema (user_version={version})")
 
 
@@ -138,14 +149,18 @@ def connect(path: str | Path = DEFAULT_DB) -> sqlite3.Connection:
 def init_db(conn: sqlite3.Connection) -> None:
     """Initialize new databases; never pretend CREATE IF NOT EXISTS migrates."""
     version = schema_version(conn)
-    if version == 2:
+    if version == SCHEMA_VERSION:
         return
     if version == 1:
         raise ValueError(
             "Legacy database: run migrate-v1-to-v2 into a new file"
         )
-    schema = (
-        files("aws_study").joinpath("schema.sql").read_text(encoding="utf-8")
+    scripts = ["schema_v3.sql"]
+    if version == 0:
+        scripts.insert(0, "schema.sql")
+    schema = "\n".join(
+        files("aws_study").joinpath(name).read_text(encoding="utf-8")
+        for name in scripts
     )
     # SQLite cannot enable foreign keys once a transaction has started.
     conn.execute("PRAGMA foreign_keys = ON")

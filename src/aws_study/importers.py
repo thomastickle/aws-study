@@ -11,6 +11,7 @@ from .db import init_db
 from .import_models import ImportConflict, ImportSummary
 from .import_repository import ImportRepository
 from .source_repository import SourceRepository
+from .question_group_repository import QuestionGroupRepository
 
 
 def import_bank(
@@ -49,6 +50,12 @@ def import_bank(
                     question,
                     context=f"source={source['key']}, source_ref={question.source_ref!r}, position={position}",
                 )
+                if question.selection_group is not None:
+                    QuestionGroupRepository(conn).assign(
+                        cert_id,
+                        [question_id],
+                        key=question.selection_group,
+                    )
                 summary.new_canonical_questions += new
                 summary.existing_canonical_matches += not new
                 summary.new_provenance_links += repository.provenance(

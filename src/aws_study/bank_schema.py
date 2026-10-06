@@ -48,6 +48,7 @@ class BankQuestion:
     topic: str | None
     answers: tuple[BankAnswer, ...]
     source_ref: str | None
+    selection_group: str | None = None
 
 
 @dataclass(frozen=True)
@@ -137,7 +138,12 @@ def validate_question(record: Any, *, curated: bool = True) -> BankQuestion:
     ref = record.get("source_ref")
     if ref is not None:
         ref = _text(ref, "source_ref")
-    return BankQuestion(text, kind, count, area, topic, tuple(answers), ref)
+    group = record.get("selection_group")
+    if group is not None:
+        group = _text(group, "selection_group")
+    return BankQuestion(
+        text, kind, count, area, topic, tuple(answers), ref, group
+    )
 
 
 def load_bank(path: str | Path) -> Bank:

@@ -17,6 +17,8 @@ from .bank_schema import BankValidationError, load_bank
 from .import_models import ImportSummary
 from .importers import import_bank, preview_bank
 from .migrations import migrate_v1_to_v2
+from .question_group_repository import QuestionGroupRepository
+from .question_group_service import QuestionGroupService
 from .quiz import run_quiz
 from .quiz_repository import QuizRepository
 from .quiz_service import QuizService
@@ -94,6 +96,22 @@ def cmd_import(args: argparse.Namespace) -> None:
 def cmd_migrate(args: argparse.Namespace) -> None:
     """Convert legacy history into a separately verified database file."""
     print(json.dumps(migrate_v1_to_v2(args.source, args.dest), indent=2))
+
+
+def cmd_question_group(args: argparse.Namespace) -> None:
+    """Assign confirmed variants to a group that excludes co-selection."""
+    with closing(_db(args)) as conn:
+        cert_id = CertificationRepository(conn).require_id(
+            args.cert, args.provider
+        )
+        QuestionGroupService(QuestionGroupRepository(conn)).assign(
+            cert_id,
+            args.question_ids,
+            key=args.key,
+        )
+    print(
+        f"Selection group {args.key}: questions {', '.join(map(str, sorted(set(args.question_ids))))}"
+    )
 
 
 def cmd_quiz(args: argparse.Namespace) -> None:
@@ -244,6 +262,15 @@ def build_parser() -> argparse.ArgumentParser:
     x.add_argument("--source", required=True)
     x.add_argument("--dest", required=True)
     x.set_defaults(func=cmd_migrate)
+
+    x = sub.add_parser(
+        "question-group", help="Keep confirmed variants out of the same quiz"
+    )
+    x.add_argument("--provider", default="AWS")
+    x.add_argument("--cert", required=True)
+    x.add_argument("--key", required=True, help="Curated selection group name")
+    x.add_argument("question_ids", nargs="+", type=int)
+    x.set_defaults(func=cmd_question_group)
 
     x = sub.add_parser("quiz", help="Run a random/adaptive mini exam")
     x.add_argument("--provider", default="AWS")

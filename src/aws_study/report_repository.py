@@ -100,7 +100,9 @@ class ReportRepository(SQLiteRepository):
     def question_context(self, question_id: int) -> JsonRecord:
         """Load exact question content and provenance for export."""
         row = self._conn.execute(
-            "SELECT * FROM questions WHERE id=:question_id",
+            """SELECT q.*,g.group_key selection_group FROM questions q
+               LEFT JOIN question_selection_groups g ON g.question_id=q.id
+               WHERE q.id=:question_id""",
             {"question_id": question_id},
         ).fetchone()
         if row is None:

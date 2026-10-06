@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Sequence
 
+from .fingerprints import normalize_match_text
 from .quiz_models import AttemptHistory, Option, Question, QuestionHistory
 from .repository import SQLiteRepository
 
@@ -44,10 +45,11 @@ class QuizRepository(SQLiteRepository):
             + ")"
         )
         rows = self._conn.execute(
-            f"""SELECT q.id, COUNT(a.id) AS attempts,
+            f"""SELECT q.id, q.question_text, g.group_key, COUNT(a.id) AS attempts,
                        SUM(CASE WHEN a.is_correct=0 THEN 1 ELSE 0 END)
                        AS misses
                 FROM questions q LEFT JOIN attempts a ON a.question_id=q.id
+                LEFT JOIN question_selection_groups g ON g.question_id=q.id
                 WHERE {' AND '.join(where)} GROUP BY q.id""",
             params,
         ).fetchall()
@@ -61,6 +63,8 @@ class QuizRepository(SQLiteRepository):
                     if include_recent and row["attempts"]
                     else ()
                 ),
+                selection_group=row["group_key"],
+                normalized_stem=normalize_match_text(row["question_text"]),
             )
             for row in rows
         )

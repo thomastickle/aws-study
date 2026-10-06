@@ -11,3 +11,10 @@ Recommended layout:
 - `reports/<exam-code>/YYYYMMDD-HHMMSS/` — one folder per export (24-hour clock), containing `session-<id>-report.md`, `session-<id>-prompt.txt`, and `session-<id>-context.json`
 
 Do not force-add these files to a public repository. The code is designed so the repository can be public while the question text, answer rationales, and personal attempt history stay local.
+
+The bank retains question variants and their separate answers/history. Quiz
+selection allows one per normalized stem or curated `selection_group` in each
+run, choosing among eligible variants randomly according to the quiz strategy.
+Source files may carry `selection_group` for confirmed wording variants.
+Schema-2 databases upgrade additively to schema 3 on opening; the original legacy
+database still requires explicit migration into a separate file.

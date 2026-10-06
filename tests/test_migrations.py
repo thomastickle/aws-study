@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from aws_study.db import connect, init_db
+from aws_study.db import SCHEMA_VERSION, connect, init_db
 from aws_study.migrations import migrate_v1_to_v2
 from aws_study.report_repository import ReportRepository
 from aws_study.source_repository import SourceRepository
@@ -119,7 +119,9 @@ class MigrationTests(unittest.TestCase):
         self.assertEqual(summary["review_notes_preserved"], 3)
         conn = connect(self.dest)
         self.addCleanup(conn.close)
-        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 2)
+        self.assertEqual(
+            conn.execute("PRAGMA user_version").fetchone()[0], SCHEMA_VERSION
+        )
         self.assertEqual(
             conn.execute("PRAGMA foreign_key_check").fetchall(), []
         )
@@ -229,7 +231,9 @@ class MigrationTests(unittest.TestCase):
         before = conn.serialize()
         init_db(conn)
         self.assertEqual(conn.serialize(), before)
-        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 2)
+        self.assertEqual(
+            conn.execute("PRAGMA user_version").fetchone()[0], SCHEMA_VERSION
+        )
         with self.assertRaises(sqlite3.IntegrityError):
             conn.execute(
                 "INSERT INTO answers(question_id,answer_text,normalized_text,is_correct,display_order) VALUES (999,'A','a',1,1)"

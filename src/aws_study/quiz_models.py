@@ -54,3 +54,5 @@ class QuestionHistory:
     attempt_count: int
     miss_count: int
     recent_attempts: tuple[AttemptHistory, ...]
+    selection_group: str | None = None
+    normalized_stem: str | None = None

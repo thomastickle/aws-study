@@ -92,7 +92,9 @@ Linux/macOS:
 There are **no runtime package downloads**. The top-level `aws-study.py` launcher loads the code directly from `src/`. The `pyproject.toml` remains available if you later want to package/install it conventionally.
 
 Local study data lives under `private/` and is ignored by Git. New databases
-use schema v2. Existing v1 databases require a separate migration; the program
+use database schema 3 (with schema-v2 question-bank inputs). Existing schema-2
+databases receive an additive selection-group table on opening; history stays
+intact. Existing v1 databases require a separate migration; the program
 will give an instruction rather than changing them in place.
 
 ### Testing v2 with existing history
@@ -215,6 +217,28 @@ The default `adaptive` selector increases probability for:
 - items not seen recently
 
 It decreases probability after a correct streak, but never permanently removes mastered questions.
+
+A quiz selects at most one question with the same normalized stem, even when
+answer choices differ. All variants stay in the bank; the sampler randomly picks
+one using the chosen strategy's weights. Stored sessions and history are unchanged.
+If the requested count exceeds the number of distinct eligible stems/groups,
+the quiz uses the available number.
+
+For confirmed equivalents with slightly different wording, v2 bank records can
+include an optional curated `selection_group` key. Such variants also cannot
+appear together. Grouping does not change content identity, grading, taxonomy,
+verification, or history. Re-importing a record without the field preserves an
+existing group; contradictory imported group keys are errors.
+
+To explicitly assign or edit a group in an existing bank:
+
+```bash
+python aws-study.py --db private/aws-study-v2.db question-group \
+  --cert CLF-C02 --key confirmed-variants 12 48
+```
+
+Use the actual question IDs to group. Keys are scoped to certification. The
+application does not infer equivalent wording through fuzzy matching.
 
 `random` ignores mastery weighting. `weak` limits the pool to previously missed questions. `new` limits it to questions with no attempt history.
 
