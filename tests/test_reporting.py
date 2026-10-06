@@ -7,15 +7,19 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
-from aws_study.cli import main
-from aws_study.db import connect, init_db
 from study_fixture import (
     bank as v2_bank,
+)
+from study_fixture import (
     converted_fixture,
+)
+from study_fixture import (
     question as fixture_question,
 )
+
+from aws_study.cli import main
+from aws_study.db import connect, init_db
 from aws_study.importers import import_internal_bank
-from aws_study.quiz import run_quiz
 from aws_study.quiz_repository import QuizRepository
 from aws_study.quiz_service import QuizService
 from aws_study.report_repository import ReportRepository

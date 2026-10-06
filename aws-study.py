@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """No-install launcher for the aws-study package."""
+
 from __future__ import annotations
 
 import sys

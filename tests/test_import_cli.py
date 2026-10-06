@@ -4,8 +4,9 @@ import json
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 
-from aws_study.cli import main
 from study_fixture import BankTestCase, bank, question
+
+from aws_study.cli import main
 
 
 class ImportCliTests(BankTestCase):

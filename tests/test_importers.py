@@ -3,6 +3,8 @@ import json
 import sqlite3
 from dataclasses import asdict
 
+from study_fixture import BankTestCase, question
+
 from aws_study.bank_schema import BankValidationError
 from aws_study.import_models import ImportConflict
 from aws_study.importers import import_internal_bank, preview_bank
@@ -10,7 +12,6 @@ from aws_study.quiz_repository import QuizRepository
 from aws_study.report_repository import ReportRepository
 from aws_study.source_repository import SourceRepository
 from aws_study.source_service import SourceService
-from study_fixture import BankTestCase, question
 
 
 class ImportTests(BankTestCase):

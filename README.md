@@ -34,14 +34,19 @@ For an extra guard, after initializing Git you can enable the included hook:
 git config core.hooksPath .githooks
 ```
 
-The pre-commit hook rejects obvious private database/question-source files if they somehow become tracked.
+The pre-commit hook rejects obvious private database/question-source files if
+they somehow become tracked. The check also rejects generated reports and
+assessment exports, and fails if Git cannot be inspected. It checks tracked
+paths rather than scanning file contents for secrets.
 
 ## Tests and builds
 
 GitHub Actions runs on pushes, pull requests, and manual dispatch. It installs
 the package and runs the test suite and CLI checks on Python 3.12, 3.13, and 3.14
 across Linux, Windows, and macOS. Pip downloads and dependency wheels are cached
-between runs. After the tests pass, it builds a wheel and source archive on
+between runs. A separate Linux/Python 3.12 quality job runs Ruff lint and format
+checks, mypy, branch coverage, optimized-Python tests, and the repository safety
+check. After tests and quality checks pass, it builds a wheel and source archive on
 Python 3.12, checks package metadata, and attaches both files to the workflow run
 for 14 days. The test and build jobs use separate cache keys so the build tools
 can be saved independently.
@@ -49,18 +54,33 @@ can be saved independently.
 Python 3.12 is the development default in `.python-version`. New language or
 standard-library features must work on 3.12 unless the minimum is raised.
 
-To test locally from the repository root:
+Install development-only tools with `uv sync --extra dev`, or with
+`.venv/bin/python -m pip install -e '.[dev]'` in a pip-enabled virtual environment.
+The existing `uv.lock` records the development dependencies. Runtime dependencies
+remain empty.
+
+Run local checks from the repository root:
 
 ```bash
 PYTHONPATH=src .venv/bin/python -m unittest discover -s tests -v
+.venv/bin/python -m ruff check .
+.venv/bin/python -m ruff format --check .
+.venv/bin/python -m mypy
+PYTHONPATH=src .venv/bin/python -m coverage run -m unittest discover -s tests -v
+.venv/bin/python -m coverage report
+PYTHONPATH=src .venv/bin/python -O -m unittest discover -s tests -q
+.venv/bin/python scripts/check_repo_safety.py
 ```
 
-Packaging uses development tools downloaded separately from runtime dependencies:
+The initial branch-coverage gate is 90%, based on a measured 93% baseline before
+this cleanup. `jsonschema` validates the public example/schema in development;
+the application continues to validate imports using standard-library code.
+
+Packaging uses the same development extra:
 
 ```bash
-python -m pip install build twine
-python -m build
-python -m twine check dist/*
+.venv/bin/python -m build
+.venv/bin/python -m twine check dist/*
 ```
 
 ## License
@@ -92,34 +112,44 @@ Linux/macOS:
 There are **no runtime package downloads**. The top-level `aws-study.py` launcher loads the code directly from `src/`. The `pyproject.toml` remains available if you later want to package/install it conventionally.
 
 Local study data lives under `private/` and is ignored by Git. New databases
-use database schema 4 (with schema-v2 question-bank inputs). Existing schema-2
-and schema-3 databases receive additive selection and answer-order tables on
-opening; history stays intact. Existing v1 databases require a separate migration; the program
+use database schema 5 (with schema-v2 question-bank inputs). Existing schema-2,
+schema-3, and schema-4 databases upgrade transactionally on opening; history
+stays intact. Schema 5 enforces one attempt per session/question and nonnegative
+elapsed time, allowing null for unknown historical durations. Incompatible
+historical attempts cause the upgrade to fail without deleting or changing
+history. Existing v1 databases require a separate migration; the program
 will give an instruction rather than changing them in place.
 
-### Migrating legacy databases
+### Migrating databases
+
+`migrate-db` accepts any supported study database (v1–v5) and creates a validated
+copy using the current SQLite schema (v5). Legacy v1 content/history is converted;
+v2–v4 copies receive the versioned SQL upgrades in order. A v5 source produces a
+validated copy. The source stays intact and the destination must not already
+exist. The JSON summary reports source/target schema versions and preserved
+history counts. Question-bank JSON uses its independent schema version, v2.
 
 For a legacy v1 database, create a separate destination (it must not already exist):
 
 ```bash
-python aws-study.py migrate-v1-to-v2 \
-  --source private/aws-study.db --dest private/aws-study-v2.db
+python aws-study.py migrate-db \
+  --source private/aws-study.db --dest private/aws-study-migrated.db
 ```
 
 Import the curated sources into that destination:
 
 ```bash
-python aws-study.py --db private/aws-study-v2.db import-json \
+python aws-study.py --db private/aws-study-migrated.db import-json \
   private/question-banks/aws/clf-c02/2026/aws-clf-c02-official-pretest-2026.json
-python aws-study.py --db private/aws-study-v2.db import-json \
+python aws-study.py --db private/aws-study-migrated.db import-json \
   private/question-banks/aws/clf-c02/2026/aws-clf-c02-official-practice-question-set-2026.json
-python aws-study.py --db private/aws-study-v2.db import-json \
+python aws-study.py --db private/aws-study-migrated.db import-json \
   private/question-banks/aws/clf-c02/2026/aws-clf-c02-official-practice-exam-2026.json
-python aws-study.py --db private/aws-study-v2.db stats --cert CLF-C02
-python aws-study.py --db private/aws-study-v2.db quiz --cert CLF-C02 -n 20 --year 2026
+python aws-study.py --db private/aws-study-migrated.db stats --cert CLF-C02
+python aws-study.py --db private/aws-study-migrated.db quiz --cert CLF-C02 -n 20 --year 2026
 ```
 
-Use `--db private/aws-study-v2.db` before the command while validating the
+Use `--db private/aws-study-migrated.db` before the command while validating the
 migration. After validation, the migrated database can be promoted to the normal
 `private/aws-study.db` path so commands work without `--db`. Migration itself
 never replaces the source. Migration
@@ -235,8 +265,9 @@ It decreases probability after a correct streak, but never permanently removes m
 A quiz selects at most one question with the same normalized stem, even when
 answer choices differ. All variants stay in the bank; the sampler randomly picks
 one using the chosen strategy's weights. Stored sessions and history are unchanged.
-If the requested count exceeds the number of distinct eligible stems/groups,
-the quiz uses the available number.
+If greedy weighted picks block a full quiz, a matching fallback replaces those
+picks with a valid combination. The quiz fills the requested count whenever
+possible, otherwise it uses the largest set satisfying both constraints.
 
 For confirmed equivalents with slightly different wording, v2 bank records can
 include an optional curated `selection_group` key. Such variants also cannot
@@ -247,7 +278,7 @@ existing group; contradictory imported group keys are errors.
 To explicitly assign or edit a group in an existing bank:
 
 ```bash
-python aws-study.py --db private/aws-study-v2.db question-group \
+python aws-study.py question-group \
   --cert CLF-C02 --key confirmed-variants 12 48
 ```
 
@@ -293,9 +324,20 @@ Questions, sources, attempts, sessions, reports, and adaptive weights stay separ
 
 ## Importing question banks
 
-The importer accepts **schema v2 only**. Certification, source and curated
+The importer accepts **question-bank JSON schema v2 only**. Certification, source and curated
 classification come from the file. A synthetic example is in
 `examples/question-bank.sample.json`.
+`examples/question-bank.schema.json` describes the v2 structure. Additional
+metadata fields remain accepted and ignored. Runtime/history fields are
+rejected, and Python validation also enforces normalized answer uniqueness,
+unique source references, and equality between `select_count` and correct answers.
+
+There is no question-bank file migration command. The old combined
+`aws-clf-c02-official-2026.json` is obsolete v1 input; the three curated source
+files under `private/question-banks/aws/clf-c02/2026/` replace it. Its embedded
+selected answers, confidence, and timing belong in database history, which
+`migrate-db` preserves from a legacy database. Bank-format conversion also needs
+curated classification metadata; importing v2 never recreates personal attempts.
 
 ```bash
 python aws-study.py import-json private/question-banks/my-bank.json --dry-run
@@ -348,6 +390,9 @@ Command parsing and terminal output live in `cli.py` and `quiz.py`.
 Services coordinate quiz rules, source verification, and report assembly.
 `bank_schema.py` validates source files; `fingerprints.py` defines matching.
 `importers.py` coordinates canonical content and provenance imports.
+Validated certification and source metadata use frozen dataclasses.
+`selection.py` ranks and samples in-memory history without persistence access;
+ranking accepts an optional timezone-aware `now` for reproducible tests.
 `migrations.py` coordinates legacy conversion through migration repositories.
 SQL belongs in the feature repositories; `db.py` only opens connections and
 initializes the schema. All repository query parameters use named binds.

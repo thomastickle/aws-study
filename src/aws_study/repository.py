@@ -1,4 +1,5 @@
 """Shared SQLite repository plumbing, without domain queries."""
+
 from __future__ import annotations
 
 import sqlite3
@@ -11,6 +12,13 @@ class SQLiteRepository:
 
     def __init__(self, conn: sqlite3.Connection) -> None:
         self._conn = conn
+
+    @staticmethod
+    def inserted_id(cursor: sqlite3.Cursor) -> int:
+        """Return a row ID after INSERT, or fail explicitly if none is available."""
+        if cursor.lastrowid is None:
+            raise RuntimeError("SQLite INSERT did not return a row ID")
+        return cursor.lastrowid
 
     @contextmanager
     def transaction(self) -> Iterator[None]:

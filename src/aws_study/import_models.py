@@ -19,6 +19,6 @@ class ImportSummary:
 class ImportConflict(ValueError):
     """Conflicts discovered in a transaction that was completely rolled back."""
 
-    def __init__(self, summary: ImportSummary):
+    def __init__(self, summary: ImportSummary) -> None:
         self.summary = summary
         super().__init__("Import conflicts: " + "; ".join(summary.conflicts))

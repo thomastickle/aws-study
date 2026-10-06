@@ -1,4 +1,5 @@
 """Persistence for certification definitions."""
+
 from __future__ import annotations
 
 from .repository import SQLiteRepository
@@ -33,8 +34,11 @@ class CertificationRepository(SQLiteRepository):
     ) -> int:
         """Save metadata, preserving stored values for omitted fields."""
         params = {
-            "provider": provider, "code": code, "name": name,
-            "version": version, "active_from_year": active_from_year,
+            "provider": provider,
+            "code": code,
+            "name": name,
+            "version": version,
+            "active_from_year": active_from_year,
             "active_to_year": active_to_year,
         }
         self._conn.execute(

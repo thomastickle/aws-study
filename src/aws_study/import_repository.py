@@ -108,7 +108,7 @@ class ImportRepository(SQLiteRepository):
                    COALESCE(:created_at,CURRENT_TIMESTAMP))""",
             params,
         )
-        question_id = int(cursor.lastrowid)
+        question_id = self.inserted_id(cursor)
         for order, answer in enumerate(question.answers, 1):
             self._conn.execute(
                 """INSERT INTO answers(question_id,answer_text,normalized_text,
@@ -188,7 +188,7 @@ class ImportRepository(SQLiteRepository):
                        :verified_year,COALESCE(:created_at,CURRENT_TIMESTAMP))""",
                 params,
             )
-            link_id = int(cursor.lastrowid)
+            link_id = self.inserted_id(cursor)
         else:
             link_id = row["id"]
             self._conn.execute(

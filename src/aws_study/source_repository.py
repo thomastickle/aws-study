@@ -79,7 +79,10 @@ class SourceRepository(SQLiteRepository):
             },
         )
         source_id = self.find_id(certification_id, source_key)
-        assert source_id is not None
+        if source_id is None:
+            raise RuntimeError(
+                f"Source {source_key!r} could not be read after upsert"
+            )
         return source_id
 
     def summaries(self, certification_id: int) -> tuple[SourceSummary, ...]:

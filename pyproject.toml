@@ -13,6 +13,16 @@ requires-python = ">=3.12"
 authors = [{name = "Thomas Tickle"}]
 dependencies = []
 
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.11,<1",
+    "mypy>=1.15,<3",
+    "coverage>=7.6,<8",
+    "jsonschema>=4.23,<5",
+    "build>=1.2,<2",
+    "twine>=6,<8",
+]
+
 [project.scripts]
 aws-study = "aws_study.cli:main"
 
@@ -21,3 +31,38 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.package-data]
 aws_study = ["schema*.sql"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 79
+extend-exclude = ["private", "plan"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
+
+[tool.ruff.lint.per-file-ignores]
+# The source launcher intentionally sets its import path before importing CLI.
+"aws-study.py" = ["E402"]
+
+[tool.mypy]
+python_version = "3.12"
+files = ["src", "tests", "scripts", "aws-study.py"]
+mypy_path = ["src", "tests"]
+check_untyped_defs = true
+no_implicit_optional = true
+warn_unused_ignores = true
+
+[[tool.mypy.overrides]]
+module = ["jsonschema", "jsonschema.*"]
+ignore_missing_imports = true
+
+[tool.coverage.run]
+branch = true
+source = ["aws_study", "scripts.check_repo_safety"]
+
+[tool.coverage.report]
+fail_under = 90
+show_missing = true
+
+[tool.coverage.html]
+directory = "htmlcov"

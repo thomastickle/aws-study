@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from .fingerprints import normalize_match_text
 
@@ -18,11 +18,41 @@ VERIFICATION_STATUSES = (
     "superseded",
 )
 
+VerificationStatus = Literal[
+    "official_current",
+    "verified_current",
+    "official_older",
+    "unverified",
+    "stale",
+    "superseded",
+]
+
+
+@dataclass(frozen=True)
+class CertificationSpec:
+    """Certification metadata consumed by imports; extra JSON metadata is ignored."""
+
+    provider: str
+    code: str
+    name: str
+
+
+@dataclass(frozen=True)
+class SourceSpec:
+    """Validated source metadata, independent of persistence field names."""
+
+    key: str
+    name: str
+    kind: str
+    observed_year: int | None
+    verified_year: int | None
+    verification_status: VerificationStatus
+
 
 class BankValidationError(ValueError):
     """All invalid records discovered before any import writes."""
 
-    def __init__(self, errors: list[str], questions_seen: int = 0):
+    def __init__(self, errors: list[str], questions_seen: int = 0) -> None:
         self.errors = errors
         self.questions_seen = questions_seen
         super().__init__("Invalid bank: " + "; ".join(errors))
@@ -55,8 +85,8 @@ class BankQuestion:
 class Bank:
     """Validated, independently importable source and certification metadata."""
 
-    certification: dict[str, Any]
-    source: dict[str, Any]
+    certification: CertificationSpec
+    source: SourceSpec
     questions: tuple[BankQuestion, ...]
 
 
@@ -157,7 +187,7 @@ def load_bank(path: str | Path) -> Bank:
         raise BankValidationError(
             [
                 "Only schema_version 2 is accepted; migrate legacy database "
-                "history with migrate-v1-to-v2 and supply curated v2 banks."
+                "history with migrate-db and supply curated v2 banks."
             ]
         )
     certification, source = data.get("certification"), data.get("source")
@@ -196,4 +226,19 @@ def load_bank(path: str | Path) -> Bank:
             errors.append(f"Question {position}: {error}")
     if errors:
         raise BankValidationError(errors, len(records))
-    return Bank(certification, source, tuple(questions))
+    return Bank(
+        CertificationSpec(
+            certification["provider"],
+            certification["code"],
+            certification["name"],
+        ),
+        SourceSpec(
+            source["key"],
+            source["name"],
+            source["type"],
+            source.get("observed_year"),
+            source.get("verified_year"),
+            source["verification_status"],
+        ),
+        tuple(questions),
+    )

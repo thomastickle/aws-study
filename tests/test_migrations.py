@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 from aws_study.db import SCHEMA_VERSION, connect, init_db
-from aws_study.migrations import migrate_v1_to_v2
+from aws_study.migrations import migrate_db
 from aws_study.report_repository import ReportRepository
 from aws_study.report_service import ReportService
 from aws_study.source_repository import SourceRepository
@@ -89,10 +89,10 @@ def legacy_fixture(path):
         )
     for aid, oid in [(1, 11), (2, 31), (2, 32), (3, 21)]:
         conn.execute("INSERT INTO attempt_options VALUES (?,?,1)", (aid, oid))
-    for qid in (1, 2, None):
+    for note_question_id in (1, 2, None):
         conn.execute(
             "INSERT INTO review_notes(question_id,certification_id,note_text) VALUES (?,1,'Keep this note')",
-            (qid,),
+            (note_question_id,),
         )
     conn.commit()
     return conn
@@ -110,7 +110,7 @@ class MigrationTests(unittest.TestCase):
 
     def test_history_and_source_specific_data_survive_merge(self):
         before = self.source.read_bytes()
-        summary = migrate_v1_to_v2(self.source, self.dest)
+        summary = migrate_db(self.source, self.dest)
         self.assertEqual(self.source.read_bytes(), before)
         self.assertEqual(summary["canonical_questions"], 2)
         self.assertEqual(summary["provenance_rows"], 3)
@@ -181,7 +181,7 @@ class MigrationTests(unittest.TestCase):
         )
         self.old.commit()
         with self.assertRaisesRegex(ValueError, "answer_key_fingerprint"):
-            migrate_v1_to_v2(self.source, self.dest)
+            migrate_db(self.source, self.dest)
         self.assertFalse(self.dest.exists())
         self.assertEqual(list(self.root.glob(".aws-study-migration-*")), [])
 
@@ -189,14 +189,36 @@ class MigrationTests(unittest.TestCase):
         self.old.execute("INSERT INTO session_questions VALUES (1,2,3,1)")
         self.old.commit()
         with self.assertRaisesRegex(ValueError, "collapse two questions"):
-            migrate_v1_to_v2(self.source, self.dest)
+            migrate_db(self.source, self.dest)
         self.assertFalse(self.dest.exists())
+
+    def test_negative_legacy_duration_fails_without_changing_source(self):
+        self.old.execute("UPDATE attempts SET elapsed_ms=-1 WHERE id=1")
+        self.old.commit()
+        before = self.source.read_bytes()
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "negative"):
+            migrate_db(self.source, self.dest)
+        self.assertEqual(self.source.read_bytes(), before)
+        self.assertFalse(self.dest.exists())
+        self.assertEqual(list(self.root.glob(".aws-study-migration-*")), [])
+
+    def test_duplicate_legacy_attempt_fails_without_changing_source(self):
+        self.old.execute(
+            "INSERT INTO attempts(session_id,question_id,is_correct) VALUES (1,1,0)"
+        )
+        self.old.commit()
+        before = self.source.read_bytes()
+        with self.assertRaises(sqlite3.IntegrityError):
+            migrate_db(self.source, self.dest)
+        self.assertEqual(self.source.read_bytes(), before)
+        self.assertFalse(self.dest.exists())
+        self.assertEqual(list(self.root.glob(".aws-study-migration-*")), [])
 
     def test_stored_correctness_mismatch_aborts(self):
         self.old.execute("UPDATE attempts SET is_correct=1 WHERE id=1")
         self.old.commit()
         with self.assertRaisesRegex(ValueError, "correctness mismatch"):
-            migrate_v1_to_v2(self.source, self.dest)
+            migrate_db(self.source, self.dest)
         self.assertFalse(self.dest.exists())
 
     def test_duplicate_normalized_answers_abort(self):
@@ -205,14 +227,14 @@ class MigrationTests(unittest.TestCase):
         )
         self.old.commit()
         with self.assertRaisesRegex(ValueError, "duplicate normalized answer"):
-            migrate_v1_to_v2(self.source, self.dest)
+            migrate_db(self.source, self.dest)
         self.assertFalse(self.dest.exists())
 
     def test_existing_destination_and_source_are_never_overwritten(self):
         self.dest.write_text("Keep me")
         for dest in (self.dest, self.source):
             with self.assertRaisesRegex(ValueError, "already exists"):
-                migrate_v1_to_v2(self.source, dest)
+                migrate_db(self.source, dest)
         self.assertEqual(self.dest.read_text(), "Keep me")
 
     def test_init_rejects_legacy_without_modifying_it(self):
@@ -227,7 +249,7 @@ class MigrationTests(unittest.TestCase):
     def test_newer_schema_is_rejected(self):
         self.old.execute("PRAGMA user_version=99")
         with self.assertRaisesRegex(ValueError, "Unsupported database schema"):
-            migrate_v1_to_v2(self.source, self.dest)
+            migrate_db(self.source, self.dest)
 
     def test_init_new_schema_enables_foreign_keys_and_is_idempotent(self):
         conn = sqlite3.connect(":memory:")
@@ -245,7 +267,7 @@ class MigrationTests(unittest.TestCase):
                 "INSERT INTO answers(question_id,answer_text,normalized_text,is_correct,display_order) VALUES (999,'A','a',1,1)"
             )
 
-    def test_incomplete_v2_schema_fails_without_modification(self):
+    def test_incomplete_canonical_schema_fails_without_modification(self):
         conn = sqlite3.connect(self.dest)
         self.addCleanup(conn.close)
         init_db(conn)
@@ -254,6 +276,6 @@ class MigrationTests(unittest.TestCase):
         )
         conn.commit()
         before = self.dest.read_bytes()
-        with self.assertRaisesRegex(ValueError, "Incomplete v2 schema"):
+        with self.assertRaisesRegex(ValueError, "Incomplete canonical schema"):
             init_db(conn)
         self.assertEqual(self.dest.read_bytes(), before)

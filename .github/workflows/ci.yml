@@ -13,6 +13,40 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  quality:
+    name: Quality (Python 3.12)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            uv.lock
+      - name: Install package and development tools
+        run: python -m pip install '.[dev]'
+      - name: Lint
+        run: python -m ruff check .
+      - name: Check formatting
+        run: python -m ruff format --check .
+      - name: Check types
+        run: python -m mypy
+      - name: Run tests with branch coverage
+        run: python -m coverage run -m unittest discover -s tests -v
+      - name: Check coverage
+        run: python -m coverage report
+      - name: Run tests with optimized Python
+        run: python -O -m unittest discover -s tests -q
+      - name: Check tracked files for private study data
+        run: python scripts/check_repo_safety.py
+
   test:
     name: Test (Python ${{ matrix.python-version }}, ${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -48,7 +82,7 @@ jobs:
 
   build:
     name: Build distributions
-    needs: test
+    needs: [test, quality]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

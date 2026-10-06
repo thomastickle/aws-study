@@ -5,8 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from aws_study.importers import import_internal_bank
 from aws_study.db import connect, init_db
+from aws_study.importers import import_internal_bank
 
 
 def question(index=1, source="pretest"):

@@ -28,6 +28,15 @@ HISTORY_TABLES = (
 class MigrationRepository(SQLiteRepository):
     """Migration-only persistence; SQL identifiers come from fixed table sets."""
 
+    def history_counts(self) -> dict[str, int]:
+        """Read preservation counts from a consistent canonical snapshot."""
+        return {
+            table: self._conn.execute(
+                f"SELECT COUNT(*) FROM {table}"
+            ).fetchone()[0]
+            for table in HISTORY_TABLES
+        }
+
     def snapshot(self) -> dict[str, list[dict]]:
         """Read all legacy records from one consistent source transaction."""
         self._conn.execute("BEGIN")

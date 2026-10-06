@@ -1,14 +1,15 @@
 """Per-session answer permutations stay stable for grading and review."""
 
-from contextlib import closing
 import sqlite3
+from contextlib import closing
+
+from study_fixture import BankTestCase, question
 
 from aws_study.db import SCHEMA_VERSION, connect, init_db
 from aws_study.quiz_repository import QuizRepository
 from aws_study.quiz_service import QuizService
 from aws_study.report_repository import ReportRepository
 from aws_study.report_service import ReportService
-from study_fixture import BankTestCase, question
 
 
 class AnswerOrderTests(BankTestCase):
@@ -71,7 +72,7 @@ class AnswerOrderTests(BankTestCase):
             ]
             for qid in (1, 2)
         }
-        seen = {1: set(), 2: set()}
+        seen: dict[int, set[tuple[int, ...]]] = {1: set(), 2: set()}
         for seed in range(20):
             for mode in ("exam", "study"):
                 sid = self.session(seed, mode)
@@ -182,6 +183,10 @@ class AnswerOrderTests(BankTestCase):
     def test_schema_three_upgrade_preserves_historical_order_and_attempts(
         self,
     ):
+        self.conn.execute("DROP INDEX idx_attempt_session_question")
+        self.conn.execute("DROP INDEX idx_attempt_question_recent")
+        self.conn.execute("DROP TRIGGER attempts_nonnegative_elapsed_insert")
+        self.conn.execute("DROP TRIGGER attempts_nonnegative_elapsed_update")
         self.conn.execute("DROP TABLE session_answers")
         self.conn.execute("DROP INDEX idx_answer_question_identity")
         self.conn.execute("PRAGMA user_version=3")

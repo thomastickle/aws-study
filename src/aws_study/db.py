@@ -8,7 +8,13 @@ from importlib.resources import files
 from pathlib import Path
 
 DEFAULT_DB = Path("private/aws-study.db")
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
+MIGRATION_SCRIPTS = {
+    2: "schema.sql",
+    3: "schema_v3.sql",
+    4: "schema_v4.sql",
+    5: "schema_v5.sql",
+}
 
 
 def open_readonly(path: str | Path) -> sqlite3.Connection:
@@ -99,14 +105,14 @@ def schema_version(conn: sqlite3.Connection) -> int:
         "attempt_options": {"attempt_id", "option_id", "selected"},
         "review_notes": {"id", "question_id", "certification_id", "note_text"},
     }
-    if version in (2, 3, 4) and required.keys() <= tables:
+    if version in (2, 3, 4, 5) and required.keys() <= tables:
         for table, expected in required.items():
             columns = {
                 r[1] for r in conn.execute(f"PRAGMA table_info({table})")
             }
             if not expected <= columns:
                 raise ValueError(
-                    f"Incomplete v2 schema: missing columns in {table}"
+                    f"Incomplete canonical schema: missing columns in {table}"
                 )
         if version >= 3:
             columns = {
@@ -131,6 +137,25 @@ def schema_version(conn: sqlite3.Connection) -> int:
                 raise ValueError(
                     "Incomplete v4 schema: missing session answer order"
                 )
+        if version >= 5:
+            invariants = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type IN ('index', 'trigger')"
+                )
+            }
+            if (
+                not {
+                    "idx_attempt_session_question",
+                    "idx_attempt_question_recent",
+                    "attempts_nonnegative_elapsed_insert",
+                    "attempts_nonnegative_elapsed_update",
+                }
+                <= invariants
+            ):
+                raise ValueError(
+                    "Incomplete v5 schema: missing attempt invariants"
+                )
         return version
     raise ValueError(f"Unsupported database schema (user_version={version})")
 
@@ -143,8 +168,8 @@ def connect(path: str | Path = DEFAULT_DB) -> sqlite3.Connection:
             version = schema_version(probe)
         if version == 1:
             raise ValueError(
-                "Legacy database: run migrate-v1-to-v2 --source "
-                f"{p} --dest private/aws-study-v2.db"
+                "Legacy database: run migrate-db --source "
+                f"{p} --dest private/aws-study-migrated.db"
             )
     p.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(p)
@@ -164,14 +189,12 @@ def init_db(conn: sqlite3.Connection) -> None:
     if version == SCHEMA_VERSION:
         return
     if version == 1:
-        raise ValueError(
-            "Legacy database: run migrate-v1-to-v2 into a new file"
-        )
-    scripts = ["schema_v4.sql"]
-    if version <= 2:
-        scripts.insert(0, "schema_v3.sql")
-    if version == 0:
-        scripts.insert(0, "schema.sql")
+        raise ValueError("Legacy database: run migrate-db into a new file")
+    # Canonical schema starts at v2; legacy v1 requires content/history mapping.
+    scripts = [
+        MIGRATION_SCRIPTS[target]
+        for target in range(max(2, version + 1), SCHEMA_VERSION + 1)
+    ]
     schema = "\n".join(
         files("aws_study").joinpath(name).read_text(encoding="utf-8")
         for name in scripts

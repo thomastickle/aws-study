@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 import random
-import sqlite3
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from .quiz_models import QuestionHistory
-from .quiz_repository import QuizRepository
 
 
 @dataclass
@@ -30,32 +28,18 @@ def _parse_dt(s: str | None) -> datetime | None:
         return None
 
 
-def candidates(
-    conn: sqlite3.Connection,
-    cert_id: int,
-    *,
-    target_year: int | None,
-    strategy: str,
-    include_unverified: bool = False,
-) -> list[Candidate]:
-    """Load and rank candidates using the existing connection-based API."""
-    history = QuizRepository(conn).candidate_history(
-        cert_id,
-        target_year=target_year,
-        include_unverified=include_unverified,
-        include_recent=strategy not in ("random", "new"),
-    )
-    return rank_candidates(history, strategy=strategy)
-
-
 def rank_candidates(
     history: Sequence[QuestionHistory],
     *,
     strategy: str,
+    now: datetime | None = None,
 ) -> list[Candidate]:
     """Calculate selection weights from history without database access."""
     out: list[Candidate] = []
-    now = datetime.now(timezone.utc)
+    if now is None:
+        now = datetime.now(timezone.utc)
+    elif now.tzinfo is None:
+        raise ValueError("Current time must include a timezone")
     for question in history:
         qid = question.question_id
         n = question.attempt_count
@@ -139,24 +123,21 @@ def weighted_sample(
     count: int,
     seed: int | None = None,
 ) -> list[Candidate]:
-    """Pick distinct questions, stems, and curated variant groups per session."""
+    """Prefer weighted picks; recover the largest feasible set if greedy underfills.
+
+    Each question is an edge between its group and stem. An absent constraint
+    gets a question-specific endpoint. Augmenting paths can replace a blocking
+    pick without losing cardinality. Edge order remains weighted and seeded.
+    Repeated question IDs use the first candidate's metadata and weight.
+    """
     rng = random.Random(seed)
-    pool = list(items)
+    unique: dict[int, Candidate] = {}
+    for item in items:
+        unique.setdefault(item.question_id, item)
+    pool = list(unique.values())
     chosen: list[Candidate] = []
     while pool and len(chosen) < count:
-        total = sum(max(x.weight, 0.0) for x in pool)
-        if total <= 0:
-            pick = rng.randrange(len(pool))
-        else:
-            needle = rng.random() * total
-            acc = 0.0
-            pick = len(pool) - 1
-            for i, item in enumerate(pool):
-                acc += max(item.weight, 0.0)
-                if acc >= needle:
-                    pick = i
-                    break
-        selected = pool.pop(pick)
+        selected = pool.pop(_weighted_index(pool, rng))
         chosen.append(selected)
         pool = [
             candidate
@@ -171,4 +152,74 @@ def weighted_sample(
                 or candidate.normalized_stem != selected.normalized_stem
             )
         ]
-    return chosen
+    if len(chosen) >= count:
+        return chosen
+    # Start with preferred picks, then weighted alternatives that they excluded.
+    preferred_ids = {item.question_id for item in chosen}
+    remaining = [
+        item
+        for item in unique.values()
+        if item.question_id not in preferred_ids
+    ]
+    priorities = list(chosen)
+    while remaining:
+        priorities.append(remaining.pop(_weighted_index(remaining, rng)))
+    return _matching_sample(priorities, count)
+
+
+def _weighted_index(pool: list[Candidate], rng: random.Random) -> int:
+    total = sum(max(item.weight, 0.0) for item in pool)
+    if total <= 0:
+        return rng.randrange(len(pool))
+    needle = rng.random() * total
+    accumulated = 0.0
+    for index, item in enumerate(pool):
+        accumulated += max(item.weight, 0.0)
+        if accumulated > needle:
+            return index
+    return len(pool) - 1
+
+
+ConstraintKey = tuple[str, str | int]
+
+
+def _group_key(item: Candidate) -> ConstraintKey:
+    return (
+        ("group", item.selection_group)
+        if item.selection_group is not None
+        else ("question", item.question_id)
+    )
+
+
+def _stem_key(item: Candidate) -> ConstraintKey:
+    return (
+        ("stem", item.normalized_stem)
+        if item.normalized_stem is not None
+        else ("question", item.question_id)
+    )
+
+
+def _matching_sample(items: list[Candidate], count: int) -> list[Candidate]:
+    edges: dict[ConstraintKey, list[Candidate]] = {}
+    for item in items:
+        edges.setdefault(_group_key(item), []).append(item)
+    matching: dict[ConstraintKey, Candidate] = {}
+
+    def augment(group: ConstraintKey, visited: set[ConstraintKey]) -> bool:
+        if group in visited:
+            return False
+        visited.add(group)
+        for item in edges[group]:
+            stem = _stem_key(item)
+            previous = matching.get(stem)
+            if previous is None or augment(_group_key(previous), visited):
+                matching[stem] = item
+                return True
+        return False
+
+    for group in edges:
+        augment(group, set())
+        if len(matching) >= count:
+            break
+    selected = {item.question_id for item in matching.values()}
+    return [item for item in items if item.question_id in selected]
