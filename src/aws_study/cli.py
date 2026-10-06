@@ -10,6 +10,8 @@ from pathlib import Path
 from .db import DEFAULT_DB, cert_id, connect, get_or_create_cert, init_db
 from .importers import import_internal_bank
 from .quiz import run_quiz
+from .quiz_repository import QuizRepository
+from .quiz_service import QuizService
 from .reporting import (
     DEFAULT_REPORT_DIR, continuation_prompt, session_data, write_report_bundle,
 )
@@ -50,8 +52,9 @@ def cmd_import(args):
 def cmd_quiz(args):
     conn = _db(args)
     cid = cert_id(conn, args.cert, args.provider)
+    service = QuizService(QuizRepository(conn))
     sid = run_quiz(
-        conn, cid, count=args.count, target_year=args.year, mode=args.mode,
+        service, cid, count=args.count, target_year=args.year, mode=args.mode,
         strategy=args.strategy, seed=args.seed, include_unverified=args.include_unverified,
     )
     paths = write_report_bundle(conn, sid, args.reports)

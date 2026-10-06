@@ -11,6 +11,8 @@ from aws_study.cli import main
 from aws_study.db import connect, init_db
 from aws_study.importers import import_internal_bank
 from aws_study.quiz import run_quiz
+from aws_study.quiz_repository import QuizRepository
+from aws_study.quiz_service import QuizService
 from aws_study.reporting import write_report_bundle
 
 
@@ -50,7 +52,8 @@ class ReportingTests(unittest.TestCase):
             redirect_stdout(StringIO()),
         ):
             self.session_id = run_quiz(
-                self.conn, self.cert_id, count=1, target_year=2026,
+                QuizService(QuizRepository(self.conn)), self.cert_id,
+                count=1, target_year=2026,
                 mode="exam", strategy="random", seed=1,
             )
         self.clock = patch("aws_study.reporting.datetime")
