@@ -90,11 +90,23 @@ python aws-study.py quiz --cert CLF-C02 -n 20 --year 2026 --mode study
 
 ## What happens after each quiz?
 
-Three local files are written under `private/reports/`:
+Exports are grouped by exam code, then by local export time (24-hour clock):
 
-1. `*-report.md` — score plus the **area/concept for each missed question**, selected answer, correct answer, confidence, and a compact continuation prompt.
-2. `*-prompt.txt` — only the compact ChatGPT continuation prompt.
-3. `*-context.json` — a deliberately small attachment containing only missed and low-confidence questions, with their exact local wording/options/rationales.
+```text
+private/reports/CLF-C02/20261006-143012/
+  session-5-report.md
+  session-5-prompt.txt
+  session-5-context.json
+```
+
+1. `session-<id>-report.md` — score plus the **area/concept for each missed question**, selected answer, correct answer, confidence, and a compact continuation prompt.
+2. `session-<id>-prompt.txt` — only the compact ChatGPT continuation prompt.
+3. `session-<id>-context.json` — a deliberately small attachment containing only missed and low-confidence questions, with their exact local wording/options/rationales.
+
+Regenerating creates another export folder. If names collide within the same
+second, a numeric suffix is added to the timestamp folder. `--reports PATH`
+changes the parent directory; the exam-code/timestamp structure still applies.
+The target study year remains in the report and context file.
 
 This keeps the long-lived corpus and attempt history in SQLite while allowing a fresh ChatGPT session to receive only the state it needs.
 

@@ -1,9 +1,29 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from datetime import datetime
 from pathlib import Path
+
+DEFAULT_REPORT_DIR = Path("private/reports")
+
+
+def _create_report_directory(session: dict, out_dir: str | Path) -> Path:
+    """Create a timestamped export folder beneath its certification code."""
+    code = re.sub(r"[^A-Za-z0-9_-]+", "-", session["code"]).strip("-") or "unknown"
+    root = Path(out_dir) / code
+    root.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    suffix = 1
+    while True:
+        directory = root / (stamp if suffix == 1 else f"{stamp}-{suffix}")
+        try:
+            directory.mkdir()
+        except FileExistsError:
+            suffix += 1
+        else:
+            return directory
 
 
 def _without_letter(text: str) -> str:
@@ -107,7 +127,11 @@ def continuation_prompt(data: dict, *, include_low_confidence: bool = True) -> s
     return "\n".join(lines)
 
 
-def write_report_bundle(conn: sqlite3.Connection, session_id: int, out_dir: str | Path) -> dict[str, Path]:
+def write_report_bundle(
+    conn: sqlite3.Connection,
+    session_id: int,
+    out_dir: str | Path = DEFAULT_REPORT_DIR,
+) -> dict[str, Path]:
     data = session_data(conn, session_id)
     s = data["session"]
     attempts = data["attempts"]
@@ -115,10 +139,7 @@ def write_report_bundle(conn: sqlite3.Connection, session_id: int, out_dir: str 
     total = len(attempts)
     score = (100 * correct_n / total) if total else 0.0
     misses = [a for a in attempts if not a["is_correct"]]
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    base = f"session-{session_id}-{stamp}"
-    out = Path(out_dir)
-    out.mkdir(parents=True, exist_ok=True)
+    out = _create_report_directory(s, out_dir)
 
     md = [
         f"# {s['provider']} {s['code']} Mini Exam Report",
@@ -150,6 +171,7 @@ def write_report_bundle(conn: sqlite3.Connection, session_id: int, out_dir: str 
     prompt = continuation_prompt(data)
     md += ["## Compact ChatGPT continuation prompt", "", "```text", prompt, "```", ""]
 
+    base = f"session-{session_id}"
     report_path = out / f"{base}-report.md"
     prompt_path = out / f"{base}-prompt.txt"
     context_path = out / f"{base}-context.json"

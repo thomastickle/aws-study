@@ -10,7 +10,9 @@ from pathlib import Path
 from .db import DEFAULT_DB, cert_id, connect, get_or_create_cert, init_db
 from .importers import import_internal_bank
 from .quiz import run_quiz
-from .reporting import continuation_prompt, session_data, write_report_bundle
+from .reporting import (
+    DEFAULT_REPORT_DIR, continuation_prompt, session_data, write_report_bundle,
+)
 
 
 def _db(args):
@@ -194,12 +196,18 @@ def build_parser():
     x.add_argument("--strategy", choices=["adaptive","random","weak","new"], default="adaptive")
     x.add_argument("--seed", type=int)
     x.add_argument("--include-unverified", action="store_true")
-    x.add_argument("--reports", default="private/reports")
+    x.add_argument(
+        "--reports", default=str(DEFAULT_REPORT_DIR),
+        help="Parent directory for report bundles (default: %(default)s)",
+    )
     x.set_defaults(func=cmd_quiz)
 
     x = sub.add_parser("report", help="Regenerate a report/prompt/context pack for a session")
     x.add_argument("session", nargs="?", default="latest")
-    x.add_argument("--reports", default="private/reports")
+    x.add_argument(
+        "--reports", default=str(DEFAULT_REPORT_DIR),
+        help="Parent directory for report bundles (default: %(default)s)",
+    )
     x.set_defaults(func=cmd_report)
 
     x = sub.add_parser("prompt", help="Print the compact ChatGPT continuation prompt")
