@@ -35,19 +35,21 @@ def candidates(
     target_year: int | None,
     strategy: str,
     include_unverified: bool = False,
-    canonical_only: bool = True,
 ) -> list[Candidate]:
     """Load and rank candidates using the existing connection-based API."""
     history = QuizRepository(conn).candidate_history(
-        cert_id, target_year=target_year,
-        include_unverified=include_unverified, canonical_only=canonical_only,
+        cert_id,
+        target_year=target_year,
+        include_unverified=include_unverified,
         include_recent=strategy not in ("random", "new"),
     )
     return rank_candidates(history, strategy=strategy)
 
 
 def rank_candidates(
-    history: Sequence[QuestionHistory], *, strategy: str,
+    history: Sequence[QuestionHistory],
+    *,
+    strategy: str,
 ) -> list[Candidate]:
     """Calculate selection weights from history without database access."""
     out: list[Candidate] = []
@@ -110,14 +112,20 @@ def rank_candidates(
                 weight *= 0.45
                 reasons.append("3+ correct streak")
 
-        out.append(Candidate(
-            qid, max(0.2, weight), ", ".join(reasons) or "baseline",
-        ))
+        out.append(
+            Candidate(
+                qid,
+                max(0.2, weight),
+                ", ".join(reasons) or "baseline",
+            )
+        )
     return out
 
 
 def weighted_sample(
-    items: list[Candidate], count: int, seed: int | None = None,
+    items: list[Candidate],
+    count: int,
+    seed: int | None = None,
 ) -> list[Candidate]:
     """Pick weighted questions without replacement, optionally reproducibly."""
     rng = random.Random(seed)

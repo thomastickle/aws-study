@@ -91,7 +91,41 @@ Linux/macOS:
 
 There are **no runtime package downloads**. The top-level `aws-study.py` launcher loads the code directly from `src/`. The `pyproject.toml` remains available if you later want to package/install it conventionally.
 
-A prebuilt local database is included in this package at `private/aws-study.db`. Because it lives under `private/`, Git ignores it.
+Local study data lives under `private/` and is ignored by Git. New databases
+use schema v2. Existing v1 databases require a separate migration; the program
+will give an instruction rather than changing them in place.
+
+### Testing v2 with existing history
+
+Create a separate destination (it must not already exist):
+
+```bash
+python aws-study.py migrate-v1-to-v2 \
+  --source private/aws-study.db --dest private/aws-study-v2.db
+```
+
+Import the curated sources into that destination:
+
+```bash
+python aws-study.py --db private/aws-study-v2.db import-json \
+  private/question-banks/aws/clf-c02/2026/aws-clf-c02-official-pretest-2026.json
+python aws-study.py --db private/aws-study-v2.db import-json \
+  private/question-banks/aws/clf-c02/2026/aws-clf-c02-official-practice-question-set-2026.json
+python aws-study.py --db private/aws-study-v2.db import-json \
+  private/question-banks/aws/clf-c02/2026/aws-clf-c02-official-practice-exam-2026.json
+python aws-study.py --db private/aws-study-v2.db stats --cert CLF-C02
+python aws-study.py --db private/aws-study-v2.db quiz --cert CLF-C02 -n 20 --year 2026
+```
+
+Keep using `--db private/aws-study-v2.db` before the command while testing.
+The default stays `private/aws-study.db`; migration never replaces it. Migration
+preserves history and checks grading, counts, and foreign keys before publishing
+the destination. Conflicts leave no destination file.
+
+V1 did not distinguish imported verification from manual updates. Migration
+preserves its effective verification as an explicit override. Use `source-verify`
+to change that state later. Old generated taxonomy is discarded; importing the
+curated files fills `area/topic` without altering attempts.
 
 Check it:
 
@@ -147,9 +181,9 @@ private/reports/CLF-C02/20261006-143012/
   session-5-context.json
 ```
 
-1. `session-<id>-report.md` — score plus the **area/concept for each missed question**, selected answer, correct answer, confidence, and a compact continuation prompt.
+1. `session-<id>-report.md` — score plus the **curated area/topic for each missed question**, selected answer, correct answer, confidence, and a compact continuation prompt.
 2. `session-<id>-prompt.txt` — only the compact ChatGPT continuation prompt.
-3. `session-<id>-context.json` — a deliberately small attachment containing only missed and low-confidence questions, with their exact local wording/options/rationales.
+3. `session-<id>-context.json` — a deliberately small attachment containing only missed and low-confidence questions, with their local wording/answers/rationales and all source occurrences.
 
 Regenerating creates another export folder. If names collide within the same
 second, a numeric suffix is added to the timestamp folder. `--reports PATH`
@@ -184,7 +218,8 @@ It decreases probability after a correct streak, but never permanently removes m
 
 `random` ignores mastery weighting. `weak` limits the pool to previously missed questions. `new` limits it to questions with no attempt history.
 
-Imported assessment results can be stored as historical baseline attempts, so the selector can immediately use the mistakes from the original assessment.
+Legacy imported-baseline attempts survive database migration and still inform
+adaptive selection. V2 source banks contain question content, not attempt history.
 
 ## Year and exam-version protection
 
@@ -202,7 +237,8 @@ Each question/source can record:
 
 By default, a 2026 mini exam only selects questions marked `official_current` or `verified_current` **and verified in 2026 or later**.
 
-That means a question verified in 2026 will *not* silently be considered verified-current for a 2027 target exam. Reverify/reimport it for the new year. `--include-unverified` exists as an explicit escape hatch, not the default.
+That means a question verified in 2026 will *not* silently be considered verified-current for a 2027 target exam. Reverify it for the new year, or import updated verification for a source that
+has no explicit override. `--include-unverified` exists as an explicit escape hatch, not the default.
 
 This is deliberate because AWS service behavior, terminology, exam blueprints, and canonical answers can change.
 
@@ -212,31 +248,50 @@ The database is not tied to Cloud Practitioner. Add/import separate banks under 
 
 ```bash
 python aws-study.py cert-add --code EXAM-CODE --name "Another AWS certification"
-python aws-study.py import-json private/question-banks/another-bank.json \
-  --cert EXAM-CODE \
-  --observed-year 2026 \
-  --verified-year 2026 \
-  --verification-status verified_current \
-  --source-type reputable-third-party
+python aws-study.py import-json private/question-banks/another-bank.json
 ```
 
 Questions, sources, attempts, sessions, reports, and adaptive weights stay separated by certification.
 
 ## Importing question banks
 
-The v0.1 importer accepts the normalized JSON shape used by the bundled bank. A minimal example is in `examples/question-bank.sample.json`.
-
-Import a bank:
+The importer accepts **schema v2 only**. Certification, source and curated
+classification come from the file. A synthetic example is in
+`examples/question-bank.sample.json`.
 
 ```bash
-python aws-study.py import-json private/question-banks/my-bank.json \
-  --cert CLF-C02 \
-  --cert-name "AWS Certified Cloud Practitioner" \
-  --observed-year 2026 \
-  --verified-year 2026 \
-  --source-type official \
-  --verification-status official_current
+python aws-study.py import-json private/question-banks/my-bank.json --dry-run
+python aws-study.py import-json private/question-banks/my-bank.json
 ```
+
+Dry-run validates and simulates against an in-memory copy of an existing database,
+opened read-only. It does not create a database when the path is absent. The JSON
+summary reports new canonical questions, existing matches, new provenance links,
+conflicts, and invalid records. Invalid/conflicting previews exit with status 2.
+No part of a conflicting bank is saved.
+
+Identity uses normalized question text plus the complete unordered answer set,
+scoped to certification. Normalization applies Unicode NFKC, whitespace folding,
+and case folding; punctuation remains significant. Original displayed text is
+preserved. Answer order and correctness are excluded from identity; conflicting
+correct-answer sets, types, selection counts, or curated classifications are
+errors. Changed content under an existing source reference is also an error.
+
+One canonical question can have multiple source occurrences, including different
+references in the same source. Each retains answer order and rationales. Quiz
+selection sees each canonical question once. Re-imports are idempotent. Items
+without a source reference match within their source by content rather than array
+position. Imports are additive: omission from a later file does not delete
+questions, provenance, or history.
+
+The first source establishes canonical answer order and rationales. Subsequent
+imports retain that presentation and update the source-specific explanations.
+Text corrections that change identity require an explicit future revision workflow;
+they are not silently applied during import.
+
+An explicit `source-verify` update survives later bank imports, including older
+verification metadata. It applies to all occurrences from that source. A question
+is eligible when any one occurrence meets the requested year/freshness rules.
 
 Verification states supported today:
 
@@ -247,20 +302,22 @@ Verification states supported today:
 - `stale`
 - `superseded`
 
-The importer preserves duplicate/variant metadata from the current normalized bank. Normal quizzes use canonical questions only by default.
+No inferred classification or semantic duplicate/alternate metadata is imported.
 
 ## Code organization
 
 Command parsing and terminal output live in `cli.py` and `quiz.py`.
 Services coordinate quiz rules, source verification, and report assembly.
-`importers.py` normalizes JSON, classifies content, and coordinates imports.
+`bank_schema.py` validates source files; `fingerprints.py` defines matching.
+`importers.py` coordinates canonical content and provenance imports.
+`migrations.py` coordinates legacy conversion through migration repositories.
 SQL belongs in the feature repositories; `db.py` only opens connections and
 initializes the schema. All repository query parameters use named binds.
 
 Repositories share a caller-owned connection and return models or documented
 export records. Their write methods do not commit: the operation that combines
 those writes owns the transaction. An import saves the entire bank atomically,
-and source verification updates provenance and questions together. CLI commands
+and source verification updates source metadata and provenance together. CLI commands
 close their connections on success and failure.
 
 `ReportService` prepares a `ReportBundle`; `reporting.py` renders its text and
@@ -276,8 +333,8 @@ Major tables:
 
 - `certifications` — exam family/code/version
 - `sources` — provenance and source freshness
-- `questions` / `options` — immutable-ish canonical question content
-- `tags` / `question_tags` — lightweight taxonomy
+- `questions` / `answers` — canonical content and curated area/topic
+- `question_sources` / `question_source_answers` — source occurrences and explanations
 - `sessions` / `session_questions` — each generated quiz
 - `attempts` / `attempt_options` — actual learning history
 - `review_notes` — future human/AI annotations without mutating canonical question text
@@ -286,16 +343,11 @@ A question does **not** have a mutable `weak=true` flag. Weakness/mastery is der
 
 ## Topic labels
 
-v0.1 contains a conservative keyword classifier used only to make reports more useful, for labels such as:
-
-- Migration
-- Hybrid networking
-- EC2 purchasing & tenancy
-- Security services
-- S3 & object storage
-- Governance & frameworks
-
-These are study aids, **not claimed to be official AWS exam-domain mappings**. The schema has a separate `domain` field so official domains/objectives can be imported when a trustworthy source provides them.
+Classification comes from each source file's curated `classification.area` and
+`classification.topic`. Import does not infer labels from question or distractor
+keywords. Migration leaves classification empty until curated data is imported.
+Reports and stats use broad area plus specific topic. Reports can also show an
+answer-boundary comparison as separate coaching context.
 
 ## Current private corpus included in this package
 
@@ -305,7 +357,8 @@ The private bank bundled for the user contains the three already-extracted offic
 - Official Practice Question Set — 20
 - Official Practice Exam — 65
 
-That is 150 source records and 148 canonical questions after the two known duplicate pairs are marked as alternates. Same-stem variants with different answer sets remain separate.
+That is 150 source records and 150 canonical questions under deterministic
+matching. Same-stem variants with different complete answer sets remain separate.
 
 The question JSON and SQLite DB are intentionally under `private/` and ignored by Git.
 
@@ -343,7 +396,7 @@ After actually checking an older source against the target year's current AWS ma
 ```bash
 python aws-study.py source-verify \
   --cert CLF-C02 \
-  --source-key practice_exam \
+  --source-key official-practice-exam-2026 \
   --year 2027 \
   --status verified_current
 ```

@@ -1,4 +1,5 @@
 """Read session and question data used by reports and continuation prompts."""
+
 from __future__ import annotations
 
 import sqlite3
@@ -40,60 +41,125 @@ class ReportRepository(SQLiteRepository):
     ) -> dict[int, tuple[ReportChoice, ...]]:
         choices: dict[int, list[ReportChoice]] = defaultdict(list)
         for row in rows:
-            choices[row["attempt_id"]].append(ReportChoice(
-                row["option_label"], row["option_text"],
-            ))
-        return {attempt_id: tuple(options)
-                for attempt_id, options in choices.items()}
+            choices[row["attempt_id"]].append(
+                ReportChoice(
+                    chr(64 + row["display_order"]),
+                    row["answer_text"],
+                )
+            )
+        return {
+            attempt_id: tuple(options)
+            for attempt_id, options in choices.items()
+        }
 
     def attempts(self, session_id: int) -> tuple[ReportAttempt, ...]:
-        """Load attempt history and choices with three queries per session."""
+        """Load attempt choices and all source occurrences for review."""
         params = {"session_id": session_id}
         attempts = self._conn.execute(
-            """SELECT a.*, q.question_text, q.topic, q.concept, q.domain,
-                      q.external_key, src.name source_name, src.source_key,
-                      q.source_question_number
+            """SELECT a.*, q.question_text, q.area, q.topic
                FROM attempts a JOIN questions q ON q.id=a.question_id
-               JOIN sources src ON src.id=q.source_id
                WHERE a.session_id=:session_id ORDER BY a.id""",
             params,
         ).fetchall()
-        selected = self._choices(self._conn.execute(
-            """SELECT a.id attempt_id, o.option_label, o.option_text
+        selected = self._choices(
+            self._conn.execute(
+                """SELECT a.id attempt_id, o.display_order, o.answer_text
                FROM attempts a JOIN attempt_options ao ON ao.attempt_id=a.id
-               JOIN options o ON o.id=ao.option_id
+               JOIN answers o ON o.id=ao.option_id
                WHERE a.session_id=:session_id AND ao.selected=1
-               ORDER BY a.id, o.option_order""",
-            params,
-        ))
-        correct = self._choices(self._conn.execute(
-            """SELECT a.id attempt_id, o.option_label, o.option_text
-               FROM attempts a JOIN options o ON o.question_id=a.question_id
+               ORDER BY a.id, o.display_order""",
+                params,
+            )
+        )
+        correct = self._choices(
+            self._conn.execute(
+                """SELECT a.id attempt_id, o.display_order, o.answer_text
+               FROM attempts a JOIN answers o ON o.question_id=a.question_id
                WHERE a.session_id=:session_id AND o.is_correct=1
-               ORDER BY a.id, o.option_order""",
-            params,
-        ))
-        return tuple(ReportAttempt(
-            dict(attempt), selected.get(attempt["id"], ()),
-            correct.get(attempt["id"], ()),
-        ) for attempt in attempts)
+               ORDER BY a.id, o.display_order""",
+                params,
+            )
+        )
+        provenance = self.provenance_for_questions(
+            {a["question_id"] for a in attempts}
+        )
+        details = []
+        for attempt in attempts:
+            record = dict(attempt)
+            record["sources"] = provenance.get(attempt["question_id"], [])
+            details.append(record)
+        return tuple(
+            ReportAttempt(
+                attempt,
+                selected.get(attempt["id"], ()),
+                correct.get(attempt["id"], ()),
+            )
+            for attempt in details
+        )
 
     def question_context(self, question_id: int) -> JsonRecord:
         """Load exact question content and provenance for export."""
         row = self._conn.execute(
-            """SELECT q.*, s.name source_name, s.source_type, s.observed_year,
-                      s.verification_status source_verification
-               FROM questions q JOIN sources s ON s.id=q.source_id
-               WHERE q.id=:question_id""",
+            "SELECT * FROM questions WHERE id=:question_id",
             {"question_id": question_id},
         ).fetchone()
         if row is None:
             raise ValueError(f"Unknown question {question_id}")
         question = dict(row)
-        question["options"] = [dict(option) for option in self._conn.execute(
-            """SELECT option_order, option_label, option_text, is_correct,
-                      rationale FROM options WHERE question_id=:question_id
-               ORDER BY option_order""",
-            {"question_id": question_id},
-        )]
+        question["answers"] = [
+            dict(option)
+            for option in self._conn.execute(
+                """SELECT id, display_order, answer_text, is_correct,
+                      rationale FROM answers WHERE question_id=:question_id
+               ORDER BY display_order""",
+                {"question_id": question_id},
+            )
+        ]
+        question["sources"] = self.provenance(question_id)
         return question
+
+    def provenance(self, question_id: int) -> list[JsonRecord]:
+        """Include every occurrence and its source-specific explanations."""
+        return self.provenance_for_questions({question_id}).get(
+            question_id, []
+        )
+
+    def provenance_for_questions(
+        self, question_ids: set[int]
+    ) -> dict[int, list[JsonRecord]]:
+        """Batch provenance and source answers in two queries for a session."""
+        if not question_ids:
+            return {}
+        params = {
+            f"q{index}": qid for index, qid in enumerate(sorted(question_ids))
+        }
+        binds = ",".join(f":{key}" for key in params)
+        sources = [
+            dict(r)
+            for r in self._conn.execute(
+                f"""SELECT qs.*,s.source_key,s.name,s.source_type,s.source_file,
+                       s.observed_year,s.verification_origin
+                FROM question_sources qs JOIN sources s ON s.id=qs.source_id
+                WHERE qs.question_id IN ({binds})
+                ORDER BY s.id,qs.source_order,qs.id""",
+                params,
+            )
+        ]
+        answers = defaultdict(list)
+        for row in self._conn.execute(
+            f"""SELECT qsa.question_source_id,a.id,a.answer_text,a.is_correct,
+                       qsa.source_order,qsa.rationale
+                FROM question_source_answers qsa JOIN answers a ON a.id=qsa.answer_id
+                JOIN question_sources qs ON qs.id=qsa.question_source_id
+                WHERE qs.question_id IN ({binds})
+                ORDER BY qsa.question_source_id,qsa.source_order""",
+            params,
+        ):
+            answer = dict(row)
+            occurrence_id = answer.pop("question_source_id")
+            answers[occurrence_id].append(answer)
+        grouped = defaultdict(list)
+        for source in sources:
+            source["answers"] = answers[source["id"]]
+            grouped[source["question_id"]].append(source)
+        return dict(grouped)

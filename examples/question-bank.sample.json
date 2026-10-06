@@ -1,18 +1,47 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
+  "certification": {
+    "provider": "AWS",
+    "code": "EXAMPLE-C01",
+    "name": "Synthetic example certification"
+  },
+  "source": {
+    "key": "synthetic-example-2026",
+    "name": "Synthetic example",
+    "type": "synthetic",
+    "observed_year": 2026,
+    "verified_year": 2026,
+    "verification_status": "verified_current"
+  },
+  "classification": {
+    "origin": "curated_from_source_content",
+    "fields": [
+      "area",
+      "topic"
+    ]
+  },
   "questions": [
     {
-      "source": "sample",
-      "source_index": 1,
+      "source_ref": "1",
       "question": "Which fictional service is the correct answer in this synthetic example?",
-      "status": "Correct",
-      "qtype": "Multiple Choice",
-      "question_type": "single_select",
-      "options": [
-        {"letter": "A", "label": "Wrong Example", "correct": false, "selected": false, "rationale": "Synthetic distractor."},
-        {"letter": "B", "label": "Right Example", "correct": true, "selected": true, "rationale": "Synthetic correct answer."}
-      ],
-      "dedup_role": "canonical"
+      "type": "single_select",
+      "select_count": 1,
+      "classification": {
+        "area": "Synthetic area",
+        "topic": "Synthetic topic"
+      },
+      "answers": [
+        {
+          "text": "Wrong Example",
+          "correct": false,
+          "rationale": "Synthetic distractor."
+        },
+        {
+          "text": "Right Example",
+          "correct": true,
+          "rationale": "Synthetic correct answer."
+        }
+      ]
     }
   ]
 }

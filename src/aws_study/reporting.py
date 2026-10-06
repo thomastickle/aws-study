@@ -1,4 +1,5 @@
 """Render report text and write prepared bundles to disk."""
+
 from __future__ import annotations
 
 import json
@@ -35,7 +36,7 @@ def _without_letter(text: str) -> str:
     return text
 
 
-def _gap_concept(a: JsonRecord) -> str:
+def _answer_boundary(a: JsonRecord) -> str:
     selected = [_without_letter(x) for x in (a.get("selected") or [])]
     correct = [_without_letter(x) for x in (a.get("correct") or [])]
     terms = []
@@ -44,23 +45,27 @@ def _gap_concept(a: JsonRecord) -> str:
             terms.append(x)
     if 1 < len(terms) <= 4 and all(len(x) <= 90 for x in terms):
         return " vs ".join(terms)
-    return (
-        a.get("concept") or a.get("topic") or a.get("domain") or "General AWS"
-    )
+    return a.get("topic") or a.get("area") or "General AWS"
 
 
 def continuation_prompt(
-    data: SessionData, *, include_low_confidence: bool = True,
+    data: SessionData,
+    *,
+    include_low_confidence: bool = True,
 ) -> str:
     """Render reinforcement guidance from prepared session/attempt records."""
     s = data["session"]
     misses = [a for a in data["attempts"] if not a["is_correct"]]
-    low = [a for a in data["attempts"]
-           if a["is_correct"] and a.get("confidence") == "low"]
+    low = [
+        a
+        for a in data["attempts"]
+        if a["is_correct"] and a.get("confidence") == "low"
+    ]
     focus = misses + (low if include_low_confidence else [])
     lines = [
         f"I'm studying for {s['provider']} {s['code']}"
-        + (f" ({s['cert_name']})" if s.get('cert_name') else "") + ".",
+        + (f" ({s['cert_name']})" if s.get("cert_name") else "")
+        + ".",
         f"Target study year: {s.get('target_year') or 'current'}.",
         "",
         "Use reasoning-first coaching. Ask one question at a time and let me "
@@ -78,8 +83,8 @@ def continuation_prompt(
             "and older weak areas if available."
         )
     for a in focus:
-        area = a.get("topic") or a.get("domain") or "General AWS"
-        concept = _gap_concept(a)
+        area = a.get("area") or "General AWS"
+        concept = a.get("topic") or "Unclassified"
         selected = "; ".join(a.get("selected") or ["(no answer)"])
         correct = "; ".join(a.get("correct") or [])
         kind = "LOW-CONFIDENCE CORRECT" if a["is_correct"] else "MISSED"
@@ -126,14 +131,23 @@ def write_report_bundle(
     if not misses:
         md.append("No missed questions in this session.")
     for idx, a in enumerate(misses, start=1):
-        area = a.get("topic") or a.get("domain") or "General AWS"
+        area = a.get("area") or "General AWS"
         selected = "; ".join(a.get("selected") or ["(no answer)"])
         correct = "; ".join(a.get("correct") or [])
         md += [
             f"### {idx}. {area}",
-            f"- Source: {a['source_name']} "
-            f"#{a.get('source_question_number') or a.get('external_key')}",
-            f"- Concept: {_gap_concept(a)}",
+            "- Sources: "
+            + "; ".join(
+                source["name"]
+                + (
+                    f" #{source['source_ref']}"
+                    if source.get("source_ref")
+                    else ""
+                )
+                for source in a.get("sources", [])
+            ),
+            f"- Topic: {a.get('topic') or 'Unclassified'}",
+            f"- Answer boundary: {_answer_boundary(a)}",
             f"- Selected: {selected}",
             f"- Correct: {correct}",
             f"- Confidence: {a.get('confidence') or 'not recorded'}",
@@ -141,8 +155,12 @@ def write_report_bundle(
         ]
     prompt = continuation_prompt(data)
     md += [
-        "## Compact ChatGPT continuation prompt", "", "```text", prompt,
-        "```", "",
+        "## Compact ChatGPT continuation prompt",
+        "",
+        "```text",
+        prompt,
+        "```",
+        "",
     ]
 
     base = f"session-{session_id}"
@@ -153,7 +171,7 @@ def write_report_bundle(
     prompt_path.write_text(prompt + "\n", encoding="utf-8")
 
     context = {
-        "schema_version": 1,
+        "schema_version": 2,
         "purpose": (
             "Minimal session context pack; "
             "local question bank remains authoritative."
@@ -164,5 +182,7 @@ def write_report_bundle(
     }
     context_path.write_text(json.dumps(context, indent=2), encoding="utf-8")
     return {
-        "report": report_path, "prompt": prompt_path, "context": context_path,
+        "report": report_path,
+        "prompt": prompt_path,
+        "context": context_path,
     }

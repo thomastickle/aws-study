@@ -24,68 +24,63 @@ CREATE TABLE IF NOT EXISTS sources (
     retrieved_at TEXT,
     verification_status TEXT NOT NULL DEFAULT 'unverified',
     verified_at TEXT,
-    verification_origin TEXT NOT NULL DEFAULT 'import'
-        CHECK(verification_origin IN ('import', 'manual')),
     notes TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(certification_id, source_key)
 );
 
-CREATE TABLE questions (
+CREATE TABLE IF NOT EXISTS questions (
     id INTEGER PRIMARY KEY,
-    certification_id INTEGER NOT NULL REFERENCES certifications(id),
+    certification_id INTEGER NOT NULL REFERENCES certifications(id) ON DELETE CASCADE,
+    source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+    source_question_number INTEGER,
+    external_key TEXT NOT NULL,
     question_text TEXT NOT NULL,
     question_type TEXT NOT NULL CHECK(question_type IN ('single_select','multi_select')),
-    select_count INTEGER NOT NULL CHECK(
-        (question_type='single_select' AND select_count=1) OR
-        (question_type='multi_select' AND select_count>=2)),
-    area TEXT,
+    domain TEXT,
     topic TEXT,
-    content_fingerprint TEXT NOT NULL,
-    answer_key_fingerprint TEXT NOT NULL,
-    fingerprint_version INTEGER NOT NULL DEFAULT 1 CHECK(fingerprint_version=1),
-    is_active INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0,1)),
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(certification_id, content_fingerprint)
-);
-CREATE INDEX idx_questions_topic ON questions(area, topic);
-CREATE TABLE answers (
-    id INTEGER PRIMARY KEY,
-    question_id INTEGER NOT NULL REFERENCES questions(id) ON DELETE CASCADE,
-    answer_text TEXT NOT NULL,
-    normalized_text TEXT NOT NULL,
-    is_correct INTEGER NOT NULL CHECK(is_correct IN (0,1)),
-    display_order INTEGER NOT NULL,
-    rationale TEXT,
-    UNIQUE(question_id, normalized_text),
-    UNIQUE(question_id, display_order)
-);
-CREATE TABLE question_sources (
-    id INTEGER PRIMARY KEY,
-    question_id INTEGER NOT NULL REFERENCES questions(id) ON DELETE CASCADE,
-    source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
-    source_ref TEXT,
-    source_order INTEGER,
+    concept TEXT,
     valid_from_year INTEGER,
     valid_to_year INTEGER,
     verification_status TEXT,
     verified_year INTEGER,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    dedup_group TEXT,
+    dedup_role TEXT NOT NULL DEFAULT 'canonical',
+    variant_group TEXT,
+    is_active INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0,1)),
+    content_hash TEXT NOT NULL,
+    metadata_json TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(source_id, external_key)
 );
-CREATE UNIQUE INDEX idx_source_ref ON question_sources(source_id, source_ref)
-    WHERE source_ref IS NOT NULL;
--- Unreferenced items match by content; source order remains presentation only.
-CREATE UNIQUE INDEX idx_source_unreferenced ON question_sources(source_id, question_id)
-    WHERE source_ref IS NULL;
-CREATE INDEX idx_provenance_question ON question_sources(question_id);
-CREATE TABLE question_source_answers (
-    question_source_id INTEGER NOT NULL REFERENCES question_sources(id) ON DELETE CASCADE,
-    answer_id INTEGER NOT NULL REFERENCES answers(id) ON DELETE CASCADE,
-    source_order INTEGER NOT NULL,
+
+CREATE INDEX IF NOT EXISTS idx_questions_cert ON questions(certification_id);
+CREATE INDEX IF NOT EXISTS idx_questions_year ON questions(valid_from_year, valid_to_year, verified_year);
+CREATE INDEX IF NOT EXISTS idx_questions_topic ON questions(topic);
+CREATE INDEX IF NOT EXISTS idx_questions_hash ON questions(content_hash);
+
+CREATE TABLE IF NOT EXISTS options (
+    id INTEGER PRIMARY KEY,
+    question_id INTEGER NOT NULL REFERENCES questions(id) ON DELETE CASCADE,
+    option_order INTEGER NOT NULL,
+    option_label TEXT,
+    option_text TEXT NOT NULL,
+    is_correct INTEGER NOT NULL CHECK(is_correct IN (0,1)),
     rationale TEXT,
-    PRIMARY KEY(question_source_id, answer_id),
-    UNIQUE(question_source_id, source_order)
+    UNIQUE(question_id, option_order)
 );
+
+CREATE TABLE IF NOT EXISTS tags (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE
+);
+
+CREATE TABLE IF NOT EXISTS question_tags (
+    question_id INTEGER NOT NULL REFERENCES questions(id) ON DELETE CASCADE,
+    tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+    PRIMARY KEY(question_id, tag_id)
+);
+
 CREATE TABLE IF NOT EXISTS sessions (
     id INTEGER PRIMARY KEY,
     certification_id INTEGER NOT NULL REFERENCES certifications(id) ON DELETE CASCADE,
@@ -123,7 +118,7 @@ CREATE TABLE IF NOT EXISTS attempts (
 
 CREATE TABLE IF NOT EXISTS attempt_options (
     attempt_id INTEGER NOT NULL REFERENCES attempts(id) ON DELETE CASCADE,
-    option_id INTEGER NOT NULL REFERENCES answers(id) ON DELETE CASCADE,
+    option_id INTEGER NOT NULL REFERENCES options(id) ON DELETE CASCADE,
     selected INTEGER NOT NULL DEFAULT 1 CHECK(selected IN (0,1)),
     PRIMARY KEY(attempt_id, option_id)
 );
@@ -136,5 +131,3 @@ CREATE TABLE IF NOT EXISTS review_notes (
     note_type TEXT NOT NULL DEFAULT 'concept',
     note_text TEXT NOT NULL
 );
-
-PRAGMA user_version = 2;

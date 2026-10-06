@@ -1,17 +1,17 @@
-"""Report read models and the existing JSON export shape."""
+"""Report read models, including curated classification and provenance."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, TypedDict
 
-# Export records intentionally retain column names and JSON-compatible values
-# so existing context files preserve their schema and metadata.
+# Export records retain column names and JSON-compatible metadata.
 JsonRecord = dict[str, Any]
 
 
 @dataclass(frozen=True)
 class ReportChoice:
-    """Raw answer text and its optional stored letter, before presentation."""
+    """Raw answer text and its canonical display letter, before presentation."""
 
     label: str | None
     text: str

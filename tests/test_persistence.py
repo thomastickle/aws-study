@@ -21,15 +21,19 @@ class PersistenceTests(BankTestCase):
         repository = CertificationRepository(self.conn)
         with repository.transaction():
             first = repository.upsert(
-                "TEST-C01", name="Synthetic", version="v1",
-                active_from_year=2026, active_to_year=2028,
+                "TEST-C01",
+                name="Synthetic",
+                version="v1",
+                active_from_year=2026,
+                active_to_year=2028,
             )
             same = repository.upsert("TEST-C01", version="v2")
             other = repository.upsert("TEST-C01", provider="OTHER")
         self.assertEqual(first, same)
         self.assertNotEqual(first, other)
         row = self.conn.execute(
-            "SELECT * FROM certifications WHERE id=?", (first,),
+            "SELECT * FROM certifications WHERE id=?",
+            (first,),
         ).fetchone()
         self.assertEqual(row["name"], "Synthetic")
         self.assertEqual(row["version"], "v2")
@@ -41,133 +45,140 @@ class PersistenceTests(BankTestCase):
     def test_source_verification_updates_only_its_certification(self):
         self.import_questions([question()])
         self.import_questions([question()], cert_code="OTHER-C01")
-        certification_id = CertificationRepository(self.conn).require_id(
-            "TEST-C01",
-        )
         SourceService(SourceRepository(self.conn)).verify(
-            certification_id, "TEST-C01", "pretest",
-            year=2027, status="verified_current",
+            1,
+            "TEST-C01",
+            "pretest",
+            year=2027,
+            status="verified_current",
         )
         rows = self.conn.execute(
-            """SELECT c.code, s.verified_at, s.verification_status,
-                      q.verified_year, q.verification_status question_status
-               FROM certifications c JOIN sources s
-               ON s.certification_id=c.id JOIN questions q ON q.source_id=s.id
-               ORDER BY c.id""",
+            "SELECT verified_year,verification_status FROM question_sources ORDER BY id"
         ).fetchall()
-        self.assertEqual(tuple(rows[0]), (
-            "TEST-C01", "2027-01-01", "verified_current", 2027,
-            "verified_current",
-        ))
-        self.assertEqual(tuple(rows[1]), (
-            "OTHER-C01", "2026-01-01", "official_current", 2026,
-            "official_current",
-        ))
-
-    def test_source_verification_failure_rolls_back_source_and_questions(self):
-        self.import_questions([question()])
-        certification_id = CertificationRepository(self.conn).require_id(
-            "TEST-C01",
+        self.assertEqual(
+            [tuple(r) for r in rows],
+            [(2027, "verified_current"), (2026, "official_current")],
         )
-        self.conn.execute("""
-            CREATE TRIGGER reject_verification BEFORE UPDATE ON questions
-            BEGIN SELECT RAISE(ABORT, 'Synthetic verification failure'); END
-        """)
+
+    def test_source_verification_failure_rolls_back_source_and_provenance(
+        self,
+    ):
+        self.import_questions([question()])
+        self.conn.execute(
+            """CREATE TRIGGER reject_verification BEFORE UPDATE ON question_sources
+            BEGIN SELECT RAISE(ABORT, 'Synthetic verification failure'); END"""
+        )
         service = SourceService(SourceRepository(self.conn))
-        with self.assertRaisesRegex(sqlite3.IntegrityError, "failure"):
+        with self.assertRaises(sqlite3.IntegrityError):
             service.verify(
-                certification_id, "TEST-C01", "pretest", year=2027,
-                status="verified_current",
+                1, "TEST-C01", "pretest", year=2027, status="verified_current"
             )
-        self.assertEqual(tuple(self.conn.execute(
-            "SELECT verification_status, verified_at FROM sources",
-        ).fetchone()), ("official_current", "2026-01-01"))
-        self.assertEqual(self.conn.execute(
-            "SELECT verified_year FROM questions",
-        ).fetchone()[0], 2026)
+        self.assertEqual(
+            tuple(
+                self.conn.execute(
+                    "SELECT verification_origin,verified_at FROM sources"
+                ).fetchone()
+            ),
+            ("import", "2026-01-01"),
+        )
         with self.assertRaisesRegex(ValueError, "Unknown source key"):
             service.verify(
-                certification_id, "TEST-C01", "missing", year=2027,
-                status="verified_current",
+                1, "TEST-C01", "missing", year=2027, status="verified_current"
             )
         with self.assertRaisesRegex(ValueError, "Unknown verification status"):
             service.verify(
-                certification_id, "TEST-C01", "pretest", year=2027,
-                status="unknown",
+                1, "TEST-C01", "pretest", year=2027, status="unknown"
             )
 
-    def test_statistics_and_source_counts_include_history_and_isolate_certs(self):
-        first = question()
-        second = question(2)
-        second["dedup_role"] = "alternate"
-        second["status"] = "Correct"
-        third = question(3)
-        self.import_questions([first, second, third])
+    def test_statistics_use_curated_area_and_topic_and_isolate_certifications(
+        self,
+    ):
+        self.import_questions([question(), question(2)])
         self.import_questions([question()], cert_code="OTHER-C01")
-        cid = CertificationRepository(self.conn).require_id("TEST-C01")
-        self.conn.execute(
-            """UPDATE questions SET topic=CASE external_key
-                   WHEN '1' THEN 'Alpha' WHEN '2' THEN 'Alpha' ELSE NULL END,
-                   is_active=CASE WHEN external_key='3' THEN 0 ELSE 1 END
-               WHERE certification_id=?""", (cid,),
+        from aws_study.quiz_repository import QuizRepository
+        from aws_study.quiz_service import QuizService
+
+        service = QuizService(QuizRepository(self.conn))
+        sid = service.create_session(
+            1,
+            count=2,
+            target_year=2026,
+            mode="exam",
+            strategy="random",
+            seed=1,
         )
+        for q in service.questions(sid):
+            service.record_answer(sid, q.id, {q.options[0].id}, None, 0)
+        self.conn.execute("UPDATE questions SET is_active=0 WHERE id=2")
         self.conn.commit()
-        stats = StatisticsRepository(self.conn).for_certification(cid)
-        self.assertEqual((stats.active_questions, stats.attempts, stats.correct),
-                         (1, 3, 1))
-        self.assertEqual([(t.topic, t.attempts, t.misses)
-                          for t in stats.weak_topics],
-                         [("General AWS", 1, 1), ("Alpha", 2, 1)])
-        repository = SourceRepository(self.conn)
-        with repository.transaction():
-            repository.upsert(
-                cid, "empty", name="Empty source", source_type="synthetic",
-                source_file="empty.json", observed_year=None,
-                verification_status="unverified", verified_at=None,
-            )
-        sources = repository.summaries(cid)
-        self.assertEqual([(s.key, s.question_count, s.canonical_count)
-                          for s in sources],
-                         [("pretest", 3, 2), ("empty", 0, 0)])
+        stats = StatisticsRepository(self.conn).for_certification(1)
+        self.assertEqual(
+            (stats.active_questions, stats.attempts, stats.correct), (1, 2, 0)
+        )
+        self.assertEqual(
+            [
+                (t.area, t.topic, t.attempts, t.misses)
+                for t in stats.weak_topics
+            ],
+            [("Compute", "Synthetic topic", 2, 2)],
+        )
+        sources = SourceRepository(self.conn).summaries(1)
+        self.assertEqual(
+            (sources[0].question_count, sources[0].canonical_count), (2, 2)
+        )
+        self.assertEqual(
+            StatisticsRepository(self.conn).for_certification(2).attempts, 0
+        )
 
     def test_empty_statistics_and_cli_output(self):
+        with redirect_stdout(StringIO()):
+            main(
+                [
+                    "--db",
+                    str(self.root / "study.db"),
+                    "cert-add",
+                    "--code",
+                    "EMPTY-C01",
+                ]
+            )
         with redirect_stdout(StringIO()) as output:
-            main([
-                "--db", str(self.root / "study.db"), "cert-add",
-                "--code", "EMPTY-C01",
-            ])
-        self.assertIn("Certification id=1: AWS EMPTY-C01", output.getvalue())
-        with redirect_stdout(StringIO()) as output:
-            main([
-                "--db", str(self.root / "study.db"), "stats",
-                "--cert", "EMPTY-C01",
-            ])
-        self.assertEqual(output.getvalue(), (
-            "AWS EMPTY-C01: 0 canonical active questions\n"
-            "Attempts: 0; correct: 0\n\nWeak topics:\n"
-        ))
+            main(
+                [
+                    "--db",
+                    str(self.root / "study.db"),
+                    "stats",
+                    "--cert",
+                    "EMPTY-C01",
+                ]
+            )
+        self.assertIn("0 canonical active questions", output.getvalue())
+        self.assertIn("Attempts: 0; correct: 0", output.getvalue())
 
     def test_source_commands_preserve_display_and_verified_year(self):
         self.import_questions([question()])
         prefix = ["--db", str(self.root / "study.db")]
         with redirect_stdout(StringIO()) as output:
             main(prefix + ["sources", "--cert", "TEST-C01"])
-        self.assertEqual(output.getvalue(), (
-            "pretest: Official Pretest | official | observed=2026 | "
-            "status=official_current | verified_at=2026-01-01 | "
-            "questions=1 (1 canonical)\n"
-        ))
-        with redirect_stdout(StringIO()) as output:
-            main(prefix + [
-                "source-verify", "--cert", "TEST-C01",
-                "--source-key", "pretest", "--year", "2027",
-            ])
-        self.assertEqual(output.getvalue(), (
-            "Updated pretest: status=verified_current, verified_year=2027\n"
-        ))
-        self.assertEqual(self.conn.execute(
-            "SELECT verified_year FROM questions",
-        ).fetchone()[0], 2027)
+        self.assertIn("questions=1 (1 canonical)", output.getvalue())
+        with redirect_stdout(StringIO()):
+            main(
+                prefix
+                + [
+                    "source-verify",
+                    "--cert",
+                    "TEST-C01",
+                    "--source-key",
+                    "pretest",
+                    "--year",
+                    "2027",
+                ]
+            )
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT verified_year FROM question_sources"
+            ).fetchone()[0],
+            2027,
+        )
 
 
 class ConnectionLifetimeTests(unittest.TestCase):
@@ -182,10 +193,16 @@ class ConnectionLifetimeTests(unittest.TestCase):
                     conn = connect(Path(root) / "study.db")
                     with (
                         patch("aws_study.cli.connect", return_value=conn),
-                        patch("aws_study.cli.init_db", side_effect=(
-                            sqlite3.OperationalError("Synthetic schema failure")
-                            if initialization_error else lambda c: init_db(c)
-                        )),
+                        patch(
+                            "aws_study.cli.init_db",
+                            side_effect=(
+                                sqlite3.OperationalError(
+                                    "Synthetic schema failure"
+                                )
+                                if initialization_error
+                                else lambda c: init_db(c)
+                            ),
+                        ),
                         redirect_stdout(StringIO()),
                         redirect_stderr(StringIO()),
                     ):

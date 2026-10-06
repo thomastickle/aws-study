@@ -1,193 +1,218 @@
-"""Persistence for imported questions, taxonomy, and historical baselines."""
+"""Canonical content and provenance persistence for imports and migration."""
+
 from __future__ import annotations
 
-from collections.abc import Sequence
 from dataclasses import asdict
 
-from .import_models import ImportedOption, ImportedQuestion
+from .bank_schema import BankQuestion
+from .fingerprints import (
+    FINGERPRINT_VERSION,
+    answer_key_fingerprint,
+    content_fingerprint,
+    normalize_match_text,
+)
 from .repository import SQLiteRepository
 
 
 class ImportRepository(SQLiteRepository):
-    """Save normalized import records without parsing JSON or committing."""
+    """Persist validated content; never commit independently of the caller."""
 
-    def find_question_id(
-        self, source_id: int, external_key: str,
-    ) -> int | None:
-        """Find a question by its stable identity within a source."""
-        row = self._conn.execute(
-            """SELECT id FROM questions
-               WHERE source_id=:source_id AND external_key=:external_key""",
-            {"source_id": source_id, "external_key": external_key},
-        ).fetchone()
-        return int(row["id"]) if row is not None else None
-
-    def has_duplicate_hash(
-        self, content_hash: str, *, excluding_id: int | None,
-    ) -> bool:
-        """Check for another record with identical normalized content."""
-        return self._conn.execute(
-            """SELECT 1 FROM questions WHERE content_hash=:content_hash
-               AND (:excluding_id IS NULL OR id<>:excluding_id) LIMIT 1""",
-            {"content_hash": content_hash, "excluding_id": excluding_id},
-        ).fetchone() is not None
-
-    def save_question(
-        self, question: ImportedQuestion, *, question_id: int | None,
-    ) -> int:
-        """Insert or update content while preserving identity and history."""
-        params = asdict(question)
-        if question_id is not None:
-            params["question_id"] = question_id
-            self._conn.execute(
-                """UPDATE questions SET
-                       question_text=:question_text,
-                       question_type=:question_type, topic=:topic,
-                       concept=:concept, verified_year=:verified_year,
-                       verification_status=:verification_status,
-                       dedup_group=:dedup_group, dedup_role=:dedup_role,
-                       variant_group=:variant_group,
-                       content_hash=:content_hash, metadata_json=:metadata_json
-                   WHERE id=:question_id""",
-                params,
-            )
-            return question_id
-        cursor = self._conn.execute(
-            """INSERT INTO questions(
-                   certification_id, source_id, source_question_number,
-                   external_key, question_text, question_type, topic, concept,
-                   valid_from_year, verification_status, verified_year,
-                   dedup_group, dedup_role, variant_group, content_hash,
-                   metadata_json)
-               VALUES (:certification_id, :source_id, :source_question_number,
-                       :external_key, :question_text, :question_type, :topic,
-                       :concept, :valid_from_year, :verification_status,
-                       :verified_year, :dedup_group, :dedup_role,
-                       :variant_group, :content_hash, :metadata_json)""",
-            params,
+    def canonical_question(
+        self,
+        certification_id: int,
+        question: BankQuestion,
+        *,
+        context: str,
+        preferred_id: int | None = None,
+        is_active: int = 1,
+        created_at: str | None = None,
+    ) -> tuple[int, bool]:
+        """Match identity, reject conflicting keys/classification, or create."""
+        fingerprint = content_fingerprint(
+            question.text, (a.text for a in question.answers)
         )
-        return int(cursor.lastrowid)
-
-    def save_options(
-        self, question_id: int, options: Sequence[ImportedOption],
-    ) -> tuple[int, ...]:
-        """Upsert choices by position and return their IDs in input order.
-
-        Existing option IDs remain stable because attempts reference them.
-        As with question updates, importing never deletes historical records.
-        """
-        option_ids = []
-        for position, option in enumerate(options):
-            params = {
-                "question_id": question_id, "position": position,
-                "label": option.label, "text": option.text,
-                "correct": int(option.correct), "rationale": option.rationale,
-            }
-            self._conn.execute(
-                """INSERT INTO options(
-                       question_id, option_order, option_label, option_text,
-                       is_correct, rationale)
-                   VALUES (:question_id, :position, :label, :text,
-                           :correct, :rationale)
-                   ON CONFLICT(question_id, option_order) DO UPDATE SET
-                       option_label=excluded.option_label,
-                       option_text=excluded.option_text,
-                       is_correct=excluded.is_correct,
-                       rationale=excluded.rationale""",
-                params,
-            )
-            row = self._conn.execute(
-                """SELECT id FROM options
-                   WHERE question_id=:question_id
-                     AND option_order=:position""",
-                params,
-            ).fetchone()
-            option_ids.append(int(row["id"]))
-        return tuple(option_ids)
-
-    def add_tags(self, question_id: int, tags: Sequence[str]) -> None:
-        """Attach classified tags idempotently without erasing prior tags."""
-        for tag in tags:
-            params = {"tag": tag, "question_id": question_id}
-            self._conn.execute(
-                "INSERT OR IGNORE INTO tags(name) VALUES (:tag)", params,
-            )
-            self._conn.execute(
-                """INSERT OR IGNORE INTO question_tags(question_id, tag_id)
-                   SELECT :question_id, id FROM tags WHERE name=:tag""",
-                params,
-            )
-
-    def baseline_session(
-        self, certification_id: int, *, label: str, target_year: int | None,
-    ) -> int:
-        """Find or create the import's historical assessment session."""
+        key = answer_key_fingerprint(
+            a.text for a in question.answers if a.correct
+        )
         params = {
-            "certification_id": certification_id, "label": label,
-            "target_year": target_year,
+            "certification_id": certification_id,
+            "question_text": question.text,
+            "question_type": question.kind,
+            "select_count": question.select_count,
+            "area": question.area,
+            "topic": question.topic,
+            "content_fingerprint": fingerprint,
+            "answer_key_fingerprint": key,
+            "fingerprint_version": FINGERPRINT_VERSION,
+            "id": preferred_id,
+            "is_active": is_active,
+            "created_at": created_at,
         }
         row = self._conn.execute(
-            """SELECT id FROM sessions
-               WHERE certification_id=:certification_id
-                 AND source_kind='imported_baseline'
-                 AND session_label=:label""",
+            """SELECT * FROM questions WHERE certification_id=:certification_id
+               AND content_fingerprint=:content_fingerprint""",
             params,
         ).fetchone()
         if row is not None:
-            return int(row["id"])
+            conflicts = []
+            for field in (
+                "question_type",
+                "select_count",
+                "answer_key_fingerprint",
+                "area",
+                "topic",
+            ):
+                existing, incoming = row[field], params[field]
+                if field in ("area", "topic") and (
+                    existing is None or incoming is None
+                ):
+                    continue
+                if existing != incoming:
+                    if field == "answer_key_fingerprint":
+                        existing = [
+                            r[0]
+                            for r in self._conn.execute(
+                                "SELECT answer_text FROM answers "
+                                "WHERE question_id=:id AND is_correct=1",
+                                {"id": row["id"]},
+                            )
+                        ]
+                        incoming = [
+                            a.text for a in question.answers if a.correct
+                        ]
+                    conflicts.append(
+                        f"{field}: existing={existing!r}, incoming={incoming!r}"
+                    )
+            if conflicts:
+                raise ValueError(
+                    f"Question {row['id']} conflict at {context}; "
+                    f"stem={question.text!r}; " + "; ".join(conflicts)
+                )
+            self._conn.execute(
+                """UPDATE questions SET area=COALESCE(area,:area),
+                   topic=COALESCE(topic,:topic) WHERE id=:id""",
+                {
+                    "id": row["id"],
+                    "area": question.area,
+                    "topic": question.topic,
+                },
+            )
+            return int(row["id"]), False
         cursor = self._conn.execute(
-            """INSERT INTO sessions(
-                   certification_id, target_year, mode, strategy,
-                   session_label, source_kind)
-               VALUES (:certification_id, :target_year, 'exam', 'source_order',
-                       :label, 'imported_baseline')""",
+            """INSERT INTO questions(id, certification_id, question_text,
+                   question_type, select_count, area, topic, content_fingerprint,
+                   answer_key_fingerprint, fingerprint_version, is_active, created_at)
+               VALUES (:id,:certification_id,:question_text,:question_type,
+                   :select_count,:area,:topic,:content_fingerprint,
+                   :answer_key_fingerprint,:fingerprint_version,:is_active,
+                   COALESCE(:created_at,CURRENT_TIMESTAMP))""",
             params,
         )
-        return int(cursor.lastrowid)
+        question_id = int(cursor.lastrowid)
+        for order, answer in enumerate(question.answers, 1):
+            self._conn.execute(
+                """INSERT INTO answers(question_id,answer_text,normalized_text,
+                       is_correct,display_order,rationale)
+                   VALUES (:question_id,:text,:normalized_text,:correct,:order,:rationale)""",
+                {
+                    **asdict(answer),
+                    "question_id": question_id,
+                    "order": order,
+                    "normalized_text": normalize_match_text(answer.text),
+                },
+            )
+        return question_id, True
 
-    def save_baseline_attempt(
-        self,
-        session_id: int,
-        question_id: int,
-        *,
-        position: int,
-        selected: Sequence[int],
-        is_correct: bool,
-        confidence: str | None,
-        elapsed_ms: int | float | None,
-    ) -> bool:
-        """Save a historical answer once; return whether it was inserted."""
-        params = {
-            "session_id": session_id, "question_id": question_id,
-            "position": position, "is_correct": int(is_correct),
-            "confidence": confidence, "elapsed_ms": elapsed_ms,
+    def answer_ids(self, question_id: int) -> dict[str, int]:
+        """Return normalized answer text to canonical answer ID."""
+        return {
+            r["normalized_text"]: r["id"]
+            for r in self._conn.execute(
+                "SELECT id,normalized_text FROM answers WHERE question_id=:id",
+                {"id": question_id},
+            )
         }
-        self._conn.execute(
-            """INSERT OR IGNORE INTO session_questions(
-                   session_id, question_id, position)
-               VALUES (:session_id, :question_id, :position)""",
-            params,
-        )
-        prior = self._conn.execute(
-            """SELECT id FROM attempts
-               WHERE session_id=:session_id AND question_id=:question_id
-                 AND source_kind='imported_baseline'""",
-            params,
-        ).fetchone()
-        if prior is not None:
-            return False
-        cursor = self._conn.execute(
-            """INSERT INTO attempts(
-                   session_id, question_id, is_correct, confidence,
-                   elapsed_ms, source_kind)
-               VALUES (:session_id, :question_id, :is_correct, :confidence,
-                       :elapsed_ms, 'imported_baseline')""",
-            params,
-        )
-        self._conn.executemany(
-            """INSERT INTO attempt_options(attempt_id, option_id, selected)
-               VALUES (:attempt_id, :option_id, 1)""",
-            [{"attempt_id": cursor.lastrowid, "option_id": option_id}
-             for option_id in selected],
-        )
-        return True
+
+    def provenance(
+        self,
+        question_id: int,
+        source_id: int,
+        question: BankQuestion,
+        *,
+        order: int,
+        observed_year: int | None,
+        status: str | None,
+        verified_year: int | None,
+        valid_to_year: int | None = None,
+        created_at: str | None = None,
+    ) -> bool:
+        """Save an occurrence and its source-specific answer order/rationales."""
+        params = {
+            "question_id": question_id,
+            "source_id": source_id,
+            "source_ref": question.source_ref,
+            "source_order": order,
+            "valid_from_year": observed_year,
+            "valid_to_year": valid_to_year,
+            "verification_status": status,
+            "verified_year": verified_year,
+            "created_at": created_at,
+        }
+        if question.source_ref is not None:
+            row = self._conn.execute(
+                """SELECT id,question_id FROM question_sources
+                   WHERE source_id=:source_id AND source_ref=:source_ref""",
+                params,
+            ).fetchone()
+        else:
+            row = self._conn.execute(
+                """SELECT id,question_id FROM question_sources WHERE
+                   source_id=:source_id AND source_ref IS NULL
+                   AND question_id=:question_id""",
+                params,
+            ).fetchone()
+        if row is not None and row["question_id"] != question_id:
+            raise ValueError(
+                f"Source-content-change conflict: existing question {row['question_id']}, "
+                f"source {source_id}, source_ref={question.source_ref!r}, "
+                f"incoming question {question_id}, stem={question.text!r}"
+            )
+        new = row is None
+        if new:
+            cursor = self._conn.execute(
+                """INSERT INTO question_sources(question_id,source_id,source_ref,
+                       source_order,valid_from_year,valid_to_year,
+                       verification_status,verified_year,created_at)
+                   VALUES (:question_id,:source_id,:source_ref,:source_order,
+                       :valid_from_year,:valid_to_year,:verification_status,
+                       :verified_year,COALESCE(:created_at,CURRENT_TIMESTAMP))""",
+                params,
+            )
+            link_id = int(cursor.lastrowid)
+        else:
+            link_id = row["id"]
+            self._conn.execute(
+                """UPDATE question_sources SET source_order=:source_order,
+                   valid_from_year=:valid_from_year,valid_to_year=:valid_to_year,
+                   verification_status=:verification_status,verified_year=:verified_year
+                   WHERE id=:id""",
+                {**params, "id": link_id},
+            )
+            self._conn.execute(
+                "DELETE FROM question_source_answers WHERE question_source_id=:id",
+                {"id": link_id},
+            )
+        answer_ids = self.answer_ids(question_id)
+        for position, answer in enumerate(question.answers, 1):
+            self._conn.execute(
+                """INSERT INTO question_source_answers(question_source_id,
+                       answer_id,source_order,rationale)
+                   VALUES (:id,:answer_id,:order,:rationale)""",
+                {
+                    "id": link_id,
+                    "answer_id": answer_ids[normalize_match_text(answer.text)],
+                    "order": position,
+                    "rationale": answer.rationale,
+                },
+            )
+        return new

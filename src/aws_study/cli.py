@@ -1,4 +1,5 @@
 """Command parsing, terminal output, and application composition."""
+
 from __future__ import annotations
 
 import argparse
@@ -8,17 +9,23 @@ import sys
 from contextlib import closing
 from dataclasses import asdict
 from datetime import datetime
+from pathlib import Path
 
 from .certification_repository import CertificationRepository
-from .db import DEFAULT_DB, connect, init_db
-from .importers import import_internal_bank
+from .db import DEFAULT_DB, connect, init_db, open_readonly
+from .bank_schema import BankValidationError, load_bank
+from .import_models import ImportSummary
+from .importers import import_bank, preview_bank
+from .migrations import migrate_v1_to_v2
 from .quiz import run_quiz
 from .quiz_repository import QuizRepository
 from .quiz_service import QuizService
 from .report_repository import ReportRepository
 from .report_service import ReportService
 from .reporting import (
-    DEFAULT_REPORT_DIR, continuation_prompt, write_report_bundle,
+    DEFAULT_REPORT_DIR,
+    continuation_prompt,
+    write_report_bundle,
 )
 from .source_repository import SourceRepository
 from .source_service import SourceService, VERIFICATION_STATUSES
@@ -49,8 +56,11 @@ def cmd_cert_add(args: argparse.Namespace) -> None:
         repository = CertificationRepository(conn)
         with repository.transaction():
             certification_id = repository.upsert(
-                args.code, provider=args.provider, name=args.name,
-                version=args.version, active_from_year=args.active_from_year,
+                args.code,
+                provider=args.provider,
+                name=args.name,
+                version=args.version,
+                active_from_year=args.active_from_year,
                 active_to_year=args.active_to_year,
             )
     print(f"Certification id={certification_id}: {args.provider} {args.code}")
@@ -58,28 +68,50 @@ def cmd_cert_add(args: argparse.Namespace) -> None:
 
 def cmd_import(args: argparse.Namespace) -> None:
     """Import a bank and print the operation's summary."""
+    if args.dry_run:
+        try:
+            if Path(args.db).exists():
+                with closing(open_readonly(args.db)) as conn:
+                    summary = preview_bank(conn, args.path)
+            else:
+                summary = preview_bank(None, args.path)
+        except BankValidationError as error:
+            summary = ImportSummary(
+                source=Path(args.path).name,
+                questions_seen=error.questions_seen,
+                invalid_records=error.errors,
+            )
+        print(json.dumps(asdict(summary), indent=2))
+        if summary.conflicts or summary.invalid_records:
+            raise SystemExit(2)
+        return
+    bank = load_bank(args.path)
     with closing(_db(args)) as conn:
-        summary = import_internal_bank(
-            conn, args.path, cert_code=args.cert, provider=args.provider,
-            cert_name=args.cert_name, observed_year=args.observed_year,
-            verified_year=args.verified_year,
-            verification_status=args.verification_status,
-            source_type=args.source_type,
-            import_baseline_attempts=not args.no_baseline,
-        )
+        summary = import_bank(conn, bank, filename=Path(args.path).name)
     print(json.dumps(asdict(summary), indent=2))
+
+
+def cmd_migrate(args: argparse.Namespace) -> None:
+    """Convert legacy history into a separately verified database file."""
+    print(json.dumps(migrate_v1_to_v2(args.source, args.dest), indent=2))
 
 
 def cmd_quiz(args: argparse.Namespace) -> None:
     """Run an interactive session and export its prepared report."""
     with closing(_db(args)) as conn:
         certification_id = CertificationRepository(conn).require_id(
-            args.cert, args.provider,
+            args.cert,
+            args.provider,
         )
         service = QuizService(QuizRepository(conn))
         session_id = run_quiz(
-            service, certification_id, count=args.count, target_year=args.year,
-            mode=args.mode, strategy=args.strategy, seed=args.seed,
+            service,
+            certification_id,
+            count=args.count,
+            target_year=args.year,
+            mode=args.mode,
+            strategy=args.strategy,
+            seed=args.seed,
             include_unverified=args.include_unverified,
             width=args.width,
         )
@@ -111,7 +143,8 @@ def cmd_stats(args: argparse.Namespace) -> None:
     """Display certification totals and weak topics."""
     with closing(_db(args)) as conn:
         certification_id = CertificationRepository(conn).require_id(
-            args.cert, args.provider,
+            args.cert,
+            args.provider,
         )
         stats = StatisticsRepository(conn).for_certification(certification_id)
     print(
@@ -121,14 +154,17 @@ def cmd_stats(args: argparse.Namespace) -> None:
     print(f"Attempts: {stats.attempts}; correct: {stats.correct}")
     print("\nWeak topics:")
     for topic in stats.weak_topics:
-        print(f"  {topic.topic}: {topic.misses}/{topic.attempts} missed")
+        print(
+            f"  {topic.area} / {topic.topic}: {topic.misses}/{topic.attempts} missed"
+        )
 
 
 def cmd_sources(args: argparse.Namespace) -> None:
     """Display source provenance, freshness, and question counts."""
     with closing(_db(args)) as conn:
         certification_id = CertificationRepository(conn).require_id(
-            args.cert, args.provider,
+            args.cert,
+            args.provider,
         )
         sources = SourceRepository(conn).summaries(certification_id)
     for source in sources:
@@ -146,11 +182,15 @@ def cmd_source_verify(args: argparse.Namespace) -> None:
     """Apply explicit source verification and display the saved year/status."""
     with closing(_db(args)) as conn:
         certification_id = CertificationRepository(conn).require_id(
-            args.cert, args.provider,
+            args.cert,
+            args.provider,
         )
         SourceService(SourceRepository(conn)).verify(
-            certification_id, args.cert, args.source_key,
-            year=args.year, status=args.status,
+            certification_id,
+            args.cert,
+            args.source_key,
+            year=args.year,
+            status=args.status,
         )
     print(
         f"Updated {args.source_key}: status={args.status}, "
@@ -161,10 +201,12 @@ def cmd_source_verify(args: argparse.Namespace) -> None:
 def build_parser() -> argparse.ArgumentParser:
     """Define commands and defaults without opening the database."""
     p = argparse.ArgumentParser(
-        prog="aws-study", description="SQLite-backed certification study CLI",
+        prog="aws-study",
+        description="SQLite-backed certification study CLI",
     )
     p.add_argument(
-        "--db", default=str(DEFAULT_DB),
+        "--db",
+        default=str(DEFAULT_DB),
         help="SQLite database path (default: private/aws-study.db)",
     )
     sub = p.add_subparsers(dest="command", required=True)
@@ -173,7 +215,8 @@ def build_parser() -> argparse.ArgumentParser:
     x.set_defaults(func=cmd_init)
 
     x = sub.add_parser(
-        "cert-add", help="Add/update a certification definition",
+        "cert-add",
+        help="Add/update a certification definition",
     )
     x.add_argument("--provider", default="AWS")
     x.add_argument("--code", required=True)
@@ -185,73 +228,85 @@ def build_parser() -> argparse.ArgumentParser:
 
     x = sub.add_parser(
         "import-json",
-        help="Import a normalized/internal question-bank JSON file",
+        help="Import a curated schema-v2 question-bank JSON file",
     )
     x.add_argument("path")
-    x.add_argument("--provider", default="AWS")
-    x.add_argument("--cert", required=True)
-    x.add_argument("--cert-name")
-    x.add_argument("--observed-year", type=int)
-    x.add_argument("--verified-year", type=int)
-    x.add_argument("--source-type", default="official")
     x.add_argument(
-        "--verification-status", default="official_current",
-        choices=VERIFICATION_STATUSES,
+        "--dry-run",
+        action="store_true",
+        help="Validate and preview against a read-only database snapshot",
     )
-    x.add_argument("--no-baseline", action="store_true")
     x.set_defaults(func=cmd_import)
+
+    x = sub.add_parser(
+        "migrate-v1-to-v2", help="Preserve legacy history in a new v2 database"
+    )
+    x.add_argument("--source", required=True)
+    x.add_argument("--dest", required=True)
+    x.set_defaults(func=cmd_migrate)
 
     x = sub.add_parser("quiz", help="Run a random/adaptive mini exam")
     x.add_argument("--provider", default="AWS")
     x.add_argument("--cert", required=True)
     x.add_argument("-n", "--count", type=int, default=20)
     x.add_argument(
-        "--year", type=int, default=datetime.now().year,
+        "--year",
+        type=int,
+        default=datetime.now().year,
         help="Target exam year; defaults to the current local year",
     )
     x.add_argument("--mode", choices=["exam", "study"], default="exam")
     x.add_argument(
-        "--strategy", choices=["adaptive", "random", "weak", "new"],
+        "--strategy",
+        choices=["adaptive", "random", "weak", "new"],
         default="adaptive",
     )
     x.add_argument("--seed", type=int)
     x.add_argument("--include-unverified", action="store_true")
     x.add_argument(
-        "--width", type=int, default=DEFAULT_WIDTH,
+        "--width",
+        type=int,
+        default=DEFAULT_WIDTH,
         help="Maximum quiz text width; adapts to narrower terminals "
-             "(default: %(default)s)",
+        "(default: %(default)s)",
     )
     x.add_argument(
-        "--reports", default=str(DEFAULT_REPORT_DIR),
+        "--reports",
+        default=str(DEFAULT_REPORT_DIR),
         help="Parent directory for report bundles (default: %(default)s)",
     )
     x.set_defaults(func=cmd_quiz)
 
     x = sub.add_parser(
-        "report", help="Regenerate a report/prompt/context pack for a session",
+        "report",
+        help="Regenerate a report/prompt/context pack for a session",
     )
     x.add_argument("session", nargs="?", default="latest")
     x.add_argument(
-        "--reports", default=str(DEFAULT_REPORT_DIR),
+        "--reports",
+        default=str(DEFAULT_REPORT_DIR),
         help="Parent directory for report bundles (default: %(default)s)",
     )
     x.set_defaults(func=cmd_report)
 
     x = sub.add_parser(
-        "prompt", help="Print the compact ChatGPT continuation prompt",
+        "prompt",
+        help="Print the compact ChatGPT continuation prompt",
     )
     x.add_argument("session", nargs="?", default="latest")
     x.set_defaults(func=cmd_prompt)
 
     x = sub.add_parser(
-        "stats", help="Show basic bank and weak-area statistics",
+        "stats",
+        help="Show basic bank and weak-area statistics",
     )
     x.add_argument("--provider", default="AWS")
     x.add_argument("--cert", required=True)
     x.set_defaults(func=cmd_stats)
 
     x = sub.add_parser(
-        "sources", help="List question-bank sources and freshness metadata",
+        "sources",
+        help="List question-bank sources and freshness metadata",
     )
     x.add_argument("--provider", default="AWS")
     x.add_argument("--cert", required=True)
@@ -259,15 +314,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     x = sub.add_parser(
         "source-verify",
-        help=("Mark a source/questions with an explicit "
-              "verification year/status"),
+        help=(
+            "Mark a source/questions with an explicit "
+            "verification year/status"
+        ),
     )
     x.add_argument("--provider", default="AWS")
     x.add_argument("--cert", required=True)
     x.add_argument("--source-key", required=True)
     x.add_argument("--year", type=int, required=True)
     x.add_argument(
-        "--status", default="verified_current", choices=VERIFICATION_STATUSES,
+        "--status",
+        default="verified_current",
+        choices=VERIFICATION_STATUSES,
     )
     x.set_defaults(func=cmd_source_verify)
     return p
