@@ -18,8 +18,9 @@ def _options(conn: sqlite3.Connection, qid: int):
 
 
 def _parse_answer(raw: str, labels: list[str]) -> set[int]:
-    raw = raw.strip().upper().replace(",", " ")
-    tokens = [t for t in raw.split() if t]
+    """Parse choices separated by any mix of whitespace, commas, or semicolons."""
+    raw = raw.upper().replace(",", " ").replace(";", " ")
+    tokens = raw.split()
     selected: set[int] = set()
     for token in tokens:
         if token.isdigit():
@@ -32,6 +33,17 @@ def _parse_answer(raw: str, labels: list[str]) -> set[int]:
             continue
         raise ValueError(f"Unknown answer token: {token}")
     return selected
+
+
+def _prompt_answer(labels: list[str]) -> set[int]:
+    while True:
+        try:
+            selected = _parse_answer(input("Answer: "), labels)
+            if not selected:
+                raise ValueError("Choose at least one option.")
+            return selected
+        except ValueError as e:
+            print(e)
 
 
 def _prompt_confidence() -> str | None:
@@ -108,18 +120,10 @@ def run_quiz(
         for i, o in enumerate(opts):
             print(f"  {labels[i]}. {o['option_text']}")
         if q["question_type"] == "multi_select":
-            print("  (Select all that apply; enter letters separated by spaces.)")
+            print("  (Select all that apply; enter uppercase or lowercase letters separated by spaces, commas, or semicolons.)")
 
         start = time.monotonic()
-        while True:
-            try:
-                raw = input("Answer: ")
-                selected = _parse_answer(raw, labels)
-                if not selected:
-                    raise ValueError("Choose at least one option.")
-                break
-            except ValueError as e:
-                print(e)
+        selected = _prompt_answer(labels)
         elapsed_ms = int((time.monotonic() - start) * 1000)
         correct_set = {i for i, o in enumerate(opts) if o["is_correct"]}
         is_correct = selected == correct_set
