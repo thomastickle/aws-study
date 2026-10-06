@@ -97,9 +97,9 @@ and schema-3 databases receive additive selection and answer-order tables on
 opening; history stays intact. Existing v1 databases require a separate migration; the program
 will give an instruction rather than changing them in place.
 
-### Testing v2 with existing history
+### Migrating legacy databases
 
-Create a separate destination (it must not already exist):
+For a legacy v1 database, create a separate destination (it must not already exist):
 
 ```bash
 python aws-study.py migrate-v1-to-v2 \
@@ -119,8 +119,10 @@ python aws-study.py --db private/aws-study-v2.db stats --cert CLF-C02
 python aws-study.py --db private/aws-study-v2.db quiz --cert CLF-C02 -n 20 --year 2026
 ```
 
-Keep using `--db private/aws-study-v2.db` before the command while testing.
-The default stays `private/aws-study.db`; migration never replaces it. Migration
+Use `--db private/aws-study-v2.db` before the command while validating the
+migration. After validation, the migrated database can be promoted to the normal
+`private/aws-study.db` path so commands work without `--db`. Migration itself
+never replaces the source. Migration
 preserves history and checks grading, counts, and foreign keys before publishing
 the destination. Conflicts leave no destination file.
 
