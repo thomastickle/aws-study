@@ -34,6 +34,28 @@ exams. The current question bank focuses on AWS Certified Cloud Practitioner.
 - Group related functionality into cohesive modules. Introduce subpackages when
   several related modules justify the additional structure.
 
+## Database migrations
+
+- Every database schema change must include migration code in the same change.
+  Increment `SCHEMA_VERSION`, add and register a new versioned migration, and
+  update schema detection, documentation, and tests. Do not rewrite migration
+  scripts already applied to released databases.
+- Preserve an upgrade path from every supported older database version to the
+  current version. Apply versioned SQL upgrades in ascending order; legacy
+  structural conversions must explicitly map content and history.
+- Upgrades must be transactional and repeated initialization must be harmless.
+  Preserve question identity, provenance, sessions, attempts, selected answers,
+  confidence, timing, review notes, and saved answer order. Reject incompatible
+  records or unsupported/newer versions rather than discarding history.
+- Test each supported starting version with synthetic data, including failure
+  rollback, foreign-key/integrity checks, and history/answer-order preservation.
+  `migrate-db` must preserve its source, refuse an existing destination, and
+  publish the upgraded copy only after validation succeeds.
+- SQLite schema versions and question-bank JSON schema versions are independent.
+  Changing a bank format requires an explicit conversion/adoption path and tests;
+  do not mix personal attempt history back into question-bank files or infer
+  authoritative classification during a format conversion.
+
 ## Verification
 
 Run commands from the repository root using the project virtual environment.
@@ -43,6 +65,12 @@ On Linux/macOS:
 
 ```bash
 PYTHONPATH=src .venv/bin/python -m unittest discover -s tests -v
+.venv/bin/python -m ruff check .
+.venv/bin/python -m ruff format --check .
+.venv/bin/python -m mypy
+PYTHONPATH=src .venv/bin/python -m coverage run -m unittest discover -s tests -v
+.venv/bin/python -m coverage report
+PYTHONPATH=src .venv/bin/python -O -m unittest discover -s tests -q
 .venv/bin/python scripts/check_repo_safety.py
 ```
 
@@ -51,7 +79,17 @@ On Windows PowerShell:
 ```powershell
 $env:PYTHONPATH = "src"
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
+.\.venv\Scripts\python.exe -m ruff check .
+.\.venv\Scripts\python.exe -m ruff format --check .
+.\.venv\Scripts\python.exe -m mypy
+.\.venv\Scripts\python.exe -m coverage run -m unittest discover -s tests -v
+.\.venv\Scripts\python.exe -m coverage report
+.\.venv\Scripts\python.exe -O -m unittest discover -s tests -q
 .\.venv\Scripts\python.exe scripts/check_repo_safety.py
 ```
 
 Run the repository safety check before preparing a commit for publication.
+Install development tools with `uv sync --extra dev` or
+`python -m pip install -e '.[dev]'` in the project virtual environment.
+Keep runtime dependencies empty.
+The coverage gate is 90%, based on the measured pre-cleanup 93% branch coverage.

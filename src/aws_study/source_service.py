@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from .source_repository import SourceRepository
-
 from .bank_schema import VERIFICATION_STATUSES
+from .source_repository import SourceRepository
 
 
 class SourceService:

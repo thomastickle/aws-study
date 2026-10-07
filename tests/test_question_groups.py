@@ -5,15 +5,15 @@ import sqlite3
 from contextlib import redirect_stdout
 from io import StringIO
 
-from aws_study.cli import main
+from study_fixture import BankTestCase, question
 
+from aws_study.cli import main
 from aws_study.db import SCHEMA_VERSION, init_db
 from aws_study.question_group_repository import QuestionGroupRepository
 from aws_study.question_group_service import QuestionGroupService
 from aws_study.quiz_repository import QuizRepository
 from aws_study.quiz_service import QuizService
 from aws_study.selection import Candidate, rank_candidates, weighted_sample
-from study_fixture import BankTestCase, question
 
 
 class SelectionGroupTests(BankTestCase):
@@ -121,7 +121,7 @@ class SelectionGroupTests(BankTestCase):
             ).fetchone()[0],
             3,
         )
-        winners = set()
+        winners: set[int] = set()
         for seed in range(50):
             sid = self.quiz.create_session(
                 1,
@@ -236,7 +236,7 @@ class SamplerTests(BankTestCase):
             Candidate(2, 1, "test", "group"),
             Candidate(3, 1, "test"),
         ]
-        winners = set()
+        winners: set[int] = set()
         for seed in range(50):
             picked = weighted_sample(pool, 20, seed)
             self.assertEqual(picked, weighted_sample(pool, 20, seed))
@@ -254,6 +254,10 @@ class SamplerTests(BankTestCase):
 
     def test_v2_upgrade_preserves_rows_and_is_idempotent(self):
         self.import_questions([question()])
+        self.conn.execute("DROP INDEX idx_attempt_session_question")
+        self.conn.execute("DROP INDEX idx_attempt_question_recent")
+        self.conn.execute("DROP TRIGGER attempts_nonnegative_elapsed_insert")
+        self.conn.execute("DROP TRIGGER attempts_nonnegative_elapsed_update")
         self.conn.execute("DROP TABLE session_answers")
         self.conn.execute("DROP INDEX idx_answer_question_identity")
         self.conn.execute("DROP TABLE question_selection_groups")

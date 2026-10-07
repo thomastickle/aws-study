@@ -10,8 +10,8 @@ from .certification_repository import CertificationRepository
 from .db import init_db
 from .import_models import ImportConflict, ImportSummary
 from .import_repository import ImportRepository
-from .source_repository import SourceRepository
 from .question_group_repository import QuestionGroupRepository
+from .source_repository import SourceRepository
 
 
 def import_bank(
@@ -20,25 +20,25 @@ def import_bank(
     """Import a validated source atomically, collecting actionable conflicts."""
     repository = ImportRepository(conn)
     source = bank.source
-    summary = ImportSummary(source["key"], questions_seen=len(bank.questions))
+    summary = ImportSummary(source.key, questions_seen=len(bank.questions))
     with repository.transaction():
         cert_id = CertificationRepository(conn).upsert(
-            bank.certification["code"],
-            provider=bank.certification["provider"],
-            name=bank.certification["name"],
+            bank.certification.code,
+            provider=bank.certification.provider,
+            name=bank.certification.name,
         )
         sources = SourceRepository(conn)
         source_id = sources.upsert(
             cert_id,
-            source["key"],
-            name=source["name"],
-            source_type=source["type"],
+            source.key,
+            name=source.name,
+            source_type=source.kind,
             source_file=filename,
-            observed_year=source.get("observed_year"),
-            verification_status=source["verification_status"],
+            observed_year=source.observed_year,
+            verification_status=source.verification_status,
             verified_at=(
-                f"{source['verified_year']:04d}-01-01"
-                if source.get("verified_year") is not None
+                f"{source.verified_year:04d}-01-01"
+                if source.verified_year is not None
                 else None
             ),
         )
@@ -48,7 +48,7 @@ def import_bank(
                 question_id, new = repository.canonical_question(
                     cert_id,
                     question,
-                    context=f"source={source['key']}, source_ref={question.source_ref!r}, position={position}",
+                    context=f"source={source.key}, source_ref={question.source_ref!r}, position={position}",
                 )
                 if question.selection_group is not None:
                     QuestionGroupRepository(conn).assign(
@@ -63,7 +63,7 @@ def import_bank(
                     source_id,
                     question,
                     order=position,
-                    observed_year=source.get("observed_year"),
+                    observed_year=source.observed_year,
                     status=status,
                     verified_year=year,
                 )

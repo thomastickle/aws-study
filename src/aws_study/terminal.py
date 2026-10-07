@@ -1,4 +1,5 @@
 """Word wrapping for plain terminal output."""
+
 from __future__ import annotations
 
 import shutil
@@ -36,9 +37,11 @@ def wrap_text(
     continuation lines use the supplied hanging indent.
     """
     wrapper = textwrap.TextWrapper(
-        width=width, initial_indent=initial_indent,
+        width=width,
+        initial_indent=initial_indent,
         subsequent_indent=subsequent_indent,
-        break_long_words=False, break_on_hyphens=False,
+        break_long_words=False,
+        break_on_hyphens=False,
     )
     lines = []
     for index, paragraph in enumerate(text.split("\n")):
@@ -61,7 +64,11 @@ def print_wrapped(
     subsequent_indent: str = "",
 ) -> None:
     """Print using the current terminal size, including after a resize."""
-    print(wrap_text(
-        text, width=terminal_width(preferred_width),
-        initial_indent=initial_indent, subsequent_indent=subsequent_indent,
-    ))
+    print(
+        wrap_text(
+            text,
+            width=terminal_width(preferred_width),
+            initial_indent=initial_indent,
+            subsequent_indent=subsequent_indent,
+        )
+    )

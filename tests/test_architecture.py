@@ -1,4 +1,5 @@
 """Guard the application's persistence boundary as new features are added."""
+
 import ast
 import unittest
 from pathlib import Path
@@ -7,6 +8,16 @@ import aws_study
 
 
 class ArchitectureTests(unittest.TestCase):
+    def test_production_code_has_no_assertions(self):
+        package = Path(aws_study.__file__).parent
+        violations = [
+            f"{path.name}:{node.lineno}"
+            for path in package.rglob("*.py")
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+            if isinstance(node, ast.Assert)
+        ]
+        self.assertEqual(violations, [])
+
     def test_sql_execution_stays_in_repositories_and_database_setup(self):
         package = Path(aws_study.__file__).parent
         violations = []
@@ -18,8 +29,11 @@ class ArchitectureTests(unittest.TestCase):
                 if (
                     isinstance(node, ast.Call)
                     and isinstance(node.func, ast.Attribute)
-                    and node.func.attr in {
-                        "execute", "executemany", "executescript",
+                    and node.func.attr
+                    in {
+                        "execute",
+                        "executemany",
+                        "executescript",
                     }
                 ):
                     violations.append(f"{path.name}:{node.lineno}")

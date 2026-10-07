@@ -1,7 +1,8 @@
-from aws_study.selection import candidates
+from study_fixture import BankTestCase, question
+
 from aws_study.quiz_repository import QuizRepository
 from aws_study.quiz_service import QuizService
-from study_fixture import BankTestCase, question
+from aws_study.selection import rank_candidates
 
 
 class CoreTests(BankTestCase):
@@ -37,13 +38,22 @@ class CoreTests(BankTestCase):
             0,
         )
         self.assertGreater(
-            candidates(self.conn, 1, target_year=2026, strategy="adaptive")[
-                0
-            ].weight,
+            rank_candidates(
+                QuizRepository(self.conn).candidate_history(
+                    1, target_year=2026
+                ),
+                strategy="adaptive",
+            )[0].weight,
             5,
         )
 
     def test_year_filter(self):
         self.assertEqual(
-            candidates(self.conn, 1, target_year=2025, strategy="random"), []
+            rank_candidates(
+                QuizRepository(self.conn).candidate_history(
+                    1, target_year=2025
+                ),
+                strategy="random",
+            ),
+            [],
         )

@@ -11,12 +11,12 @@ from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 
-from .certification_repository import CertificationRepository
-from .db import DEFAULT_DB, connect, init_db, open_readonly
 from .bank_schema import BankValidationError, load_bank
+from .certification_repository import CertificationRepository
+from .db import DEFAULT_DB, SCHEMA_VERSION, connect, init_db, open_readonly
 from .import_models import ImportSummary
 from .importers import import_bank, preview_bank
-from .migrations import migrate_v1_to_v2
+from .migrations import migrate_db
 from .question_group_repository import QuestionGroupRepository
 from .question_group_service import QuestionGroupService
 from .quiz import run_quiz
@@ -30,7 +30,7 @@ from .reporting import (
     write_report_bundle,
 )
 from .source_repository import SourceRepository
-from .source_service import SourceService, VERIFICATION_STATUSES
+from .source_service import VERIFICATION_STATUSES, SourceService
 from .statistics_repository import StatisticsRepository
 from .terminal import DEFAULT_WIDTH
 
@@ -94,8 +94,8 @@ def cmd_import(args: argparse.Namespace) -> None:
 
 
 def cmd_migrate(args: argparse.Namespace) -> None:
-    """Convert legacy history into a separately verified database file."""
-    print(json.dumps(migrate_v1_to_v2(args.source, args.dest), indent=2))
+    """Migrate a supported database into a separately verified current file."""
+    print(json.dumps(migrate_db(args.source, args.dest), indent=2))
 
 
 def cmd_question_group(args: argparse.Namespace) -> None:
@@ -257,7 +257,13 @@ def build_parser() -> argparse.ArgumentParser:
     x.set_defaults(func=cmd_import)
 
     x = sub.add_parser(
-        "migrate-v1-to-v2", help="Preserve legacy history in a new v2 database"
+        "migrate-db",
+        help="Migrate a study database to the current schema in a new file",
+        description=(
+            f"Migrate any supported study database to the current SQLite "
+            f"schema (v{SCHEMA_VERSION}) in a separate destination file. "
+            "The original is preserved. Question-bank JSON has a separate version."
+        ),
     )
     x.add_argument("--source", required=True)
     x.add_argument("--dest", required=True)
@@ -342,8 +348,7 @@ def build_parser() -> argparse.ArgumentParser:
     x = sub.add_parser(
         "source-verify",
         help=(
-            "Mark a source/questions with an explicit "
-            "verification year/status"
+            "Mark a source/questions with an explicit verification year/status"
         ),
     )
     x.add_argument("--provider", default="AWS")

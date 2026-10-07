@@ -50,39 +50,56 @@ class QuizRepository(SQLiteRepository):
                        AS misses
                 FROM questions q LEFT JOIN attempts a ON a.question_id=q.id
                 LEFT JOIN question_selection_groups g ON g.question_id=q.id
-                WHERE {' AND '.join(where)} GROUP BY q.id""",
+                WHERE {" AND ".join(where)} GROUP BY q.id ORDER BY q.id""",
             params,
         ).fetchall()
+        recent = (
+            self._recent_attempts(
+                [row["id"] for row in rows if row["attempts"]]
+            )
+            if include_recent
+            else {}
+        )
         return tuple(
             QuestionHistory(
                 question_id=row["id"],
                 attempt_count=row["attempts"],
                 miss_count=row["misses"] or 0,
-                recent_attempts=(
-                    self._recent_attempts(row["id"])
-                    if include_recent and row["attempts"]
-                    else ()
-                ),
+                recent_attempts=recent.get(row["id"], ()),
                 selection_group=row["group_key"],
                 normalized_stem=normalize_match_text(row["question_text"]),
             )
             for row in rows
         )
 
-    def _recent_attempts(self, question_id: int) -> tuple[AttemptHistory, ...]:
-        return tuple(
-            AttemptHistory(
-                bool(attempt["is_correct"]),
-                attempt["confidence"],
-                attempt["attempted_at"],
+    def _recent_attempts(
+        self, question_ids: Sequence[int]
+    ) -> dict[int, tuple[AttemptHistory, ...]]:
+        """Batch newest-five histories for eligible questions in one query."""
+        if not question_ids:
+            return {}
+        params = {
+            f"question_{index}": qid for index, qid in enumerate(question_ids)
+        }
+        binds = ",".join(f":{name}" for name in params)
+        grouped: dict[int, list[AttemptHistory]] = {}
+        for attempt in self._conn.execute(
+            f"""WITH recent AS (
+                    SELECT question_id, is_correct, confidence, attempted_at,
+                           ROW_NUMBER() OVER (PARTITION BY question_id ORDER BY id DESC) AS position
+                    FROM attempts WHERE question_id IN ({binds})
+                ) SELECT question_id, is_correct, confidence, attempted_at FROM recent
+                  WHERE position <= 5 ORDER BY question_id, position""",
+            params,
+        ):
+            grouped.setdefault(attempt["question_id"], []).append(
+                AttemptHistory(
+                    bool(attempt["is_correct"]),
+                    attempt["confidence"],
+                    attempt["attempted_at"],
+                )
             )
-            for attempt in self._conn.execute(
-                """SELECT is_correct, confidence, attempted_at
-                   FROM attempts WHERE question_id=:question_id
-                   ORDER BY id DESC LIMIT 5""",
-                {"question_id": question_id},
-            )
-        )
+        return {qid: tuple(attempts) for qid, attempts in grouped.items()}
 
     def insert_session(
         self,
@@ -111,7 +128,7 @@ class QuizRepository(SQLiteRepository):
                 "requested_count": requested_count,
             },
         )
-        session_id = int(cursor.lastrowid)
+        session_id = self.inserted_id(cursor)
         for position, (question_id, weight) in enumerate(
             selected_questions,
             1,
@@ -271,11 +288,12 @@ class QuizRepository(SQLiteRepository):
                 "elapsed_ms": elapsed_ms,
             },
         )
+        attempt_id = self.inserted_id(cursor)
         for option_id in sorted(selected):
             self._conn.execute(
                 """INSERT INTO attempt_options(attempt_id, option_id, selected)
                    VALUES (:attempt_id, :option_id, 1)""",
-                {"attempt_id": cursor.lastrowid, "option_id": option_id},
+                {"attempt_id": attempt_id, "option_id": option_id},
             )
 
     def unanswered_questions(self, session_id: int) -> tuple[int, ...]:

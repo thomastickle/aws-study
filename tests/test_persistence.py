@@ -6,17 +6,17 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
+from study_fixture import BankTestCase, question
+
 from aws_study.certification_repository import CertificationRepository
 from aws_study.cli import main
 from aws_study.db import connect, init_db
 from aws_study.source_repository import SourceRepository
 from aws_study.source_service import SourceService
 from aws_study.statistics_repository import StatisticsRepository
-from study_fixture import BankTestCase, question
 
 
 class PersistenceTests(BankTestCase):
-
     def test_certification_upsert_preserves_omitted_metadata(self):
         repository = CertificationRepository(self.conn)
         with repository.transaction():

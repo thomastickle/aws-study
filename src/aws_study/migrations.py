@@ -1,4 +1,4 @@
-"""Non-destructive v1 to v2 conversion with explicit history mapping."""
+"""Non-destructive legacy conversion into the current canonical database schema."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from contextlib import closing
 from pathlib import Path
 
 from .bank_schema import validate_question
-from .db import init_db, open_readonly, schema_version
+from .db import SCHEMA_VERSION, init_db, open_readonly, schema_version
 from .fingerprints import normalize_match_text
 from .import_repository import ImportRepository
 from .migration_repository import HISTORY_TABLES, MigrationRepository
@@ -35,9 +35,9 @@ def _migrate_records(
         items.sort(key=lambda o: o["option_order"])
     question_map, answer_map = {}, {}
     historical_answer_orders = {}
-    source_orders = defaultdict(int)
+    source_orders: defaultdict[int, int] = defaultdict(int)
     source_refs = set()
-    active = defaultdict(int)
+    active: defaultdict[int, int] = defaultdict(int)
     with repository.transaction():
         for cert in records["certifications"]:
             repository.insert_record("certifications", cert)
@@ -150,44 +150,74 @@ def _migrate_records(
             raise ValueError(
                 "Migration did not preserve every source occurrence"
             )
+    return _summary(
+        summary, expected, questions_read=len(records["questions"])
+    )
+
+
+def _summary(
+    validation: dict[str, int], counts: dict[str, int], *, questions_read: int
+) -> dict[str, int]:
+    """Use the same CLI preservation counts for legacy conversion and upgrades."""
+    preserved = {
+        f"{table}_preserved": count for table, count in counts.items()
+    }
+    preserved["selected_answer_records_preserved"] = preserved.pop(
+        "attempt_options_preserved"
+    )
     return {
-        "questions_read": len(records["questions"]),
-        **summary,
-        "certifications_preserved": len(records["certifications"]),
-        "sessions_preserved": len(records["sessions"]),
-        "session_questions_preserved": len(records["session_questions"]),
-        "attempts_preserved": len(records["attempts"]),
-        "selected_answer_records_preserved": len(records["attempt_options"]),
-        "review_notes_preserved": len(records["review_notes"]),
+        "questions_read": questions_read,
+        **validation,
+        **preserved,
         "conflicts": 0,
     }
 
 
-def migrate_v1_to_v2(source: str | Path, dest: str | Path) -> dict[str, int]:
-    """Build and verify a separate database; publish only after success.
+def migrate_db(source: str | Path, dest: str | Path) -> dict[str, int]:
+    """Convert or upgrade any supported study database into a separate file.
 
     The destination must not exist. Hard-link publication refuses to overwrite
-    a destination created concurrently, and the source is opened read-only.
+    a destination created concurrently. The source is read-only, and versioned
+    databases use SQLite backup so committed WAL history is included. A current
+    database produces a validated copy without reapplying schema changes.
     """
     source, dest = Path(source), Path(dest)
     if dest.exists() or dest.is_symlink():
         raise ValueError(f"Destination already exists: {dest}")
     with closing(open_readonly(source)) as original:
-        if schema_version(original) != 1:
-            raise ValueError("Migration requires a recognized v1 database")
-        records = MigrationRepository(original).snapshot()
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temp_name = tempfile.mkstemp(
-        prefix=".aws-study-migration-", suffix=".db", dir=dest.parent
-    )
-    os.close(descriptor)
-    temporary = Path(temp_name)
-    try:
-        with closing(sqlite3.connect(temporary)) as conn:
-            conn.row_factory = sqlite3.Row
-            init_db(conn)
-            summary = _migrate_records(conn, records)
-        os.link(temporary, dest)
-        return summary
-    finally:
-        temporary.unlink(missing_ok=True)
+        version = schema_version(original)
+        if version == 0:
+            raise ValueError("Migration requires an existing study database")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, temp_name = tempfile.mkstemp(
+            prefix=".aws-study-migration-", suffix=".db", dir=dest.parent
+        )
+        os.close(descriptor)
+        temporary = Path(temp_name)
+        try:
+            with closing(sqlite3.connect(temporary)) as conn:
+                conn.row_factory = sqlite3.Row
+                if version == 1:
+                    records = MigrationRepository(original).snapshot()
+                    init_db(conn)
+                    summary = _migrate_records(conn, records)
+                else:
+                    original.backup(conn)
+                    repository = MigrationRepository(conn)
+                    expected = repository.history_counts()
+                    init_db(conn)
+                    validation = repository.validate(expected)
+                    summary = _summary(
+                        validation,
+                        expected,
+                        questions_read=validation["canonical_questions"],
+                    )
+            os.link(temporary, dest)
+            return {
+                "source_schema_version": version,
+                "target_schema_version": SCHEMA_VERSION,
+                **summary,
+            }
+        finally:
+            for suffix in ("", "-wal", "-shm", "-journal"):
+                Path(str(temporary) + suffix).unlink(missing_ok=True)

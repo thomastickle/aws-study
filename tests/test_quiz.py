@@ -7,14 +7,14 @@ from contextlib import redirect_stdout
 from datetime import datetime, timezone
 from io import StringIO
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
-from aws_study.db import connect, init_db
 from study_fixture import (
-    bank as v2_bank,
     converted_fixture,
-    question as fixture_question,
 )
+
+from aws_study.db import connect, init_db
 from aws_study.importers import import_internal_bank
 from aws_study.quiz import _parse_answer, _prompt_confidence, run_quiz
 from aws_study.quiz_models import AttemptHistory, QuestionHistory
@@ -71,7 +71,7 @@ class QuizTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def session(self, **overrides):
-        settings = {
+        settings: dict[str, Any] = {
             "count": 2,
             "target_year": 2026,
             "mode": "exam",
@@ -543,36 +543,49 @@ class SelectionTests(unittest.TestCase):
             QuestionHistory(2, 2, 1, (AttemptHistory(False, "low", recent),)),
             QuestionHistory(3, 3, 0, (AttemptHistory(True, None, old),) * 3),
         )
-        with patch("aws_study.selection.datetime") as clock:
-            clock.now.return_value = datetime(2026, 10, 6, tzinfo=timezone.utc)
-            clock.fromisoformat.side_effect = datetime.fromisoformat
-            weights = {
-                candidate.question_id: candidate.weight
-                for candidate in rank_candidates(history, strategy="adaptive")
-            }
-            self.assertEqual(weights[1], 4)
-            self.assertEqual(weights[2], 11)
-            self.assertAlmostEqual(weights[3], 1.8)
-            self.assertEqual(
-                [
-                    c.question_id
-                    for c in rank_candidates(history, strategy="new")
-                ],
-                [1],
+        weights = {
+            candidate.question_id: candidate.weight
+            for candidate in rank_candidates(
+                history,
+                now=datetime(2026, 10, 6, tzinfo=timezone.utc),
+                strategy="adaptive",
             )
-            self.assertEqual(
-                [
-                    c.question_id
-                    for c in rank_candidates(history, strategy="weak")
-                ],
-                [2],
-            )
-            self.assertTrue(
-                all(
-                    c.weight == 1
-                    for c in rank_candidates(history, strategy="random")
+        }
+        self.assertEqual(weights[1], 4)
+        self.assertEqual(weights[2], 11)
+        self.assertAlmostEqual(weights[3], 1.8)
+        self.assertEqual(
+            [
+                c.question_id
+                for c in rank_candidates(
+                    history,
+                    now=datetime(2026, 10, 6, tzinfo=timezone.utc),
+                    strategy="new",
+                )
+            ],
+            [1],
+        )
+        self.assertEqual(
+            [
+                c.question_id
+                for c in rank_candidates(
+                    history,
+                    now=datetime(2026, 10, 6, tzinfo=timezone.utc),
+                    strategy="weak",
+                )
+            ],
+            [2],
+        )
+        self.assertTrue(
+            all(
+                c.weight == 1
+                for c in rank_candidates(
+                    history,
+                    now=datetime(2026, 10, 6, tzinfo=timezone.utc),
+                    strategy="random",
                 )
             )
+        )
 
 
 if __name__ == "__main__":
