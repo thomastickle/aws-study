@@ -227,16 +227,27 @@ private/reports/CLF-C02/20261006-143012/
   session-5-context.json
 ```
 
-1. `session-<id>-report.md` — score plus the **curated area/topic for each missed question**, selected answer, correct answer, confidence, and a compact continuation prompt.
-2. `session-<id>-prompt.txt` — only the compact ChatGPT continuation prompt.
-3. `session-<id>-context.json` — a deliberately small attachment containing only missed and low-confidence questions, with their local wording/answers/rationales and all source occurrences.
+1. `session-<id>-report.md` — score plus the **curated area/topic for each missed question**, selected answer, correct answer, confidence, an optional section for correct low- or medium-confidence answers, and a compact continuation prompt.
+2. `session-<id>-prompt.txt` — only the compact ChatGPT continuation prompt: misses first, then correct low- and medium-confidence answers. Its summaries contain topics, sources, and confidence, without selected or correct answers.
+3. `session-<id>-context.json` — a complete schema-v2 session record containing every saved question in quiz order, with the saved answer order/letters, full wording, answers, rationales, and all source occurrences. Each question includes `position`, `result` (correctness, confidence, elapsed milliseconds), `selected_answers`, and `correct_answers`. Unanswered questions have `result: null` and an empty selected-answer list.
 
 Regenerating creates another export folder. If names collide within the same
 second, a numeric suffix is added to the timestamp folder. `--reports PATH`
 changes the parent directory; the exam-code/timestamp structure still applies.
 The target study year remains in the report and context file.
 
-This keeps the long-lived corpus and attempt history in SQLite while allowing a fresh ChatGPT session to receive only the state it needs.
+The JSON preserves the full session while the prompt stays focused on learning
+priorities. Correct high-confidence answers and correct answers with unrecorded
+confidence remain in the JSON but are omitted from the prompt. Reinforcement
+summaries contain no answer text; detailed answers remain in the report's missed
+areas and the JSON. The tutoring instructions still require reasoning before
+revealing answers, even when the full context is attached.
+
+Incomplete sessions show answered versus saved question counts. Scores use only
+answered questions; unanswered questions are not counted as incorrect. Reports
+summarize the selected session, without calculating older weaknesses or changing
+adaptive selection. Regenerated exports use the bank content and provenance
+available at export time. Existing export files remain untouched.
 
 Regenerate the latest report bundle:
 

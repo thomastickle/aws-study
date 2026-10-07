@@ -10,27 +10,21 @@ JsonRecord = dict[str, Any]
 
 
 @dataclass(frozen=True)
-class ReportChoice:
-    """Raw answer text and its saved session display letter, before presentation."""
-
-    label: str | None
-    text: str
-
-
-@dataclass(frozen=True)
-class ReportAttempt:
-    """Attempt metadata with choices in their original option order."""
+class ReportSessionQuestion:
+    """Saved membership, ordered answers, and an optional persisted attempt."""
 
     details: JsonRecord
-    selected: tuple[ReportChoice, ...]
-    correct: tuple[ReportChoice, ...]
+    answers: tuple[JsonRecord, ...]
+    attempt: JsonRecord | None
+    selected_answer_ids: frozenset[int]
 
 
 class SessionData(TypedDict):
-    """Session/certification metadata and attempts with choice text lists."""
+    """Complete session context and attempted-question review records."""
 
     session: JsonRecord
     attempts: list[JsonRecord]
+    questions: tuple[JsonRecord, ...]
 
 
 @dataclass(frozen=True)

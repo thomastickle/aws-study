@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import sqlite3
 from collections import defaultdict
-from collections.abc import Iterable
 
-from .report_models import JsonRecord, ReportAttempt, ReportChoice
+from .report_models import JsonRecord, ReportSessionQuestion
 from .repository import SQLiteRepository
 
 
@@ -35,71 +33,69 @@ class ReportRepository(SQLiteRepository):
             raise ValueError(f"Unknown session {session_id}")
         return dict(row)
 
-    @staticmethod
-    def _choices(
-        rows: Iterable[sqlite3.Row],
-    ) -> dict[int, tuple[ReportChoice, ...]]:
-        choices: dict[int, list[ReportChoice]] = defaultdict(list)
-        for row in rows:
-            choices[row["attempt_id"]].append(
-                ReportChoice(
-                    chr(64 + row["display_order"]),
-                    row["answer_text"],
-                )
-            )
-        return {
-            attempt_id: tuple(options)
-            for attempt_id, options in choices.items()
-        }
-
-    def attempts(self, session_id: int) -> tuple[ReportAttempt, ...]:
-        """Load attempt choices and all source occurrences for review."""
+    def session_questions(
+        self, session_id: int
+    ) -> tuple[ReportSessionQuestion, ...]:
+        """Batch-load every saved question, including unanswered questions."""
         params = {"session_id": session_id}
-        attempts = self._conn.execute(
-            """SELECT a.*, q.question_text, q.area, q.topic
-               FROM attempts a JOIN questions q ON q.id=a.question_id
-               WHERE a.session_id=:session_id ORDER BY a.id""",
+        questions = self._conn.execute(
+            """SELECT q.*,sq.position,g.group_key selection_group
+               FROM session_questions sq JOIN questions q ON q.id=sq.question_id
+               LEFT JOIN question_selection_groups g ON g.question_id=q.id
+               WHERE sq.session_id=:session_id ORDER BY sq.position""",
             params,
         ).fetchall()
-        selected = self._choices(
-            self._conn.execute(
-                """SELECT a.id attempt_id, sa.display_order, o.answer_text
-               FROM attempts a JOIN attempt_options ao ON ao.attempt_id=a.id
-               JOIN answers o ON o.id=ao.option_id
-               JOIN session_answers sa ON sa.session_id=a.session_id
-               AND sa.question_id=a.question_id AND sa.answer_id=o.id
-               WHERE a.session_id=:session_id AND ao.selected=1
-               ORDER BY a.id, sa.display_order""",
+        if not questions:
+            return ()
+        attempts = {
+            row["question_id"]: dict(row)
+            for row in self._conn.execute(
+                "SELECT * FROM attempts WHERE session_id=:session_id",
                 params,
             )
-        )
-        correct = self._choices(
-            self._conn.execute(
-                """SELECT a.id attempt_id, sa.display_order, o.answer_text
-               FROM attempts a JOIN answers o ON o.question_id=a.question_id
-               JOIN session_answers sa ON sa.session_id=a.session_id
-               AND sa.question_id=a.question_id AND sa.answer_id=o.id
-               WHERE a.session_id=:session_id AND o.is_correct=1
-               ORDER BY a.id, sa.display_order""",
-                params,
-            )
-        )
+        }
+        answers: dict[int, list[JsonRecord]] = defaultdict(list)
+        selected: dict[int, set[int]] = defaultdict(set)
+        for row in self._conn.execute(
+            """SELECT sa.question_id,o.id,sa.display_order,o.answer_text,
+                      o.is_correct,o.rationale,COALESCE(ao.selected,0) selected
+               FROM session_answers sa JOIN answers o ON o.id=sa.answer_id
+               LEFT JOIN attempts a ON a.session_id=sa.session_id
+                   AND a.question_id=sa.question_id
+               LEFT JOIN attempt_options ao ON ao.attempt_id=a.id
+                   AND ao.option_id=o.id
+               WHERE sa.session_id=:session_id
+               ORDER BY sa.question_id,sa.display_order""",
+            params,
+        ):
+            answer = dict(row)
+            question_id = answer.pop("question_id")
+            if answer.pop("selected"):
+                selected[question_id].add(answer["id"])
+            answer["label"] = chr(64 + answer["display_order"])
+            answers[question_id].append(answer)
         provenance = self.provenance_for_questions(
-            {a["question_id"] for a in attempts}
+            {q["id"] for q in questions}
         )
-        details = []
-        for attempt in attempts:
-            record = dict(attempt)
-            record["sources"] = provenance.get(attempt["question_id"], [])
-            details.append(record)
-        return tuple(
-            ReportAttempt(
-                attempt,
-                selected.get(attempt["id"], ()),
-                correct.get(attempt["id"], ()),
+        records = []
+        for row in questions:
+            question = dict(row)
+            question_id = question["id"]
+            if not answers[question_id]:
+                raise ValueError(
+                    f"Session {session_id} question {question_id} "
+                    "has no saved answer order"
+                )
+            question["sources"] = provenance.get(question_id, [])
+            records.append(
+                ReportSessionQuestion(
+                    question,
+                    tuple(answers[question_id]),
+                    attempts.get(question_id),
+                    frozenset(selected[question_id]),
+                )
             )
-            for attempt in details
-        )
+        return tuple(records)
 
     def question_context(
         self, question_id: int, *, session_id: int | None = None

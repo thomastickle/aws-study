@@ -48,6 +48,27 @@ def _answer_boundary(a: JsonRecord) -> str:
     return a.get("topic") or a.get("area") or "General AWS"
 
 
+def _sources_text(attempt: JsonRecord) -> str:
+    return (
+        "; ".join(
+            source["name"]
+            + (f" #{source['source_ref']}" if source.get("source_ref") else "")
+            for source in attempt.get("sources", [])
+        )
+        or "not recorded"
+    )
+
+
+def _reinforcement_candidates(data: SessionData) -> list[JsonRecord]:
+    """Prioritize unsure correct answers, retaining session order in ties."""
+    return [
+        attempt
+        for confidence in ("low", "medium")
+        for attempt in data["attempts"]
+        if attempt["is_correct"] and attempt.get("confidence") == confidence
+    ]
+
+
 def continuation_prompt(
     data: SessionData,
     *,
@@ -56,12 +77,12 @@ def continuation_prompt(
     """Render reinforcement guidance from prepared session/attempt records."""
     s = data["session"]
     misses = [a for a in data["attempts"] if not a["is_correct"]]
-    low = [
-        a
-        for a in data["attempts"]
-        if a["is_correct"] and a.get("confidence") == "low"
+    reinforcement = _reinforcement_candidates(data)
+    focus = misses + [
+        attempt
+        for attempt in reinforcement
+        if include_low_confidence or attempt.get("confidence") != "low"
     ]
-    focus = misses + (low if include_low_confidence else [])
     lines = [
         f"I'm studying for {s['provider']} {s['code']}"
         + (f" ({s['cert_name']})" if s.get("cert_name") else "")
@@ -74,23 +95,40 @@ def continuation_prompt(
         "Discuss why each distractor is wrong and sharpen boundaries between "
         "neighboring services/concepts. Mix weak areas with unrelated "
         "material so the topic itself does not reveal the answer.",
+        "Prioritize misses and low-confidence correct answers; use lighter "
+        "review for medium-confidence correct answers.",
         "",
         "Latest weak/reinforcement areas:",
     ]
-    if not focus:
+    answered = len(data["attempts"])
+    saved = len(data["questions"])
+    if answered < saved:
         lines.append(
-            "- No misses in the latest session. Use broad mixed review "
-            "and older weak areas if available."
+            f"- Incomplete session: {answered}/{saved} questions answered; "
+            "unanswered questions have no result."
+        )
+    if not answered:
+        lines.append(
+            "- No answered questions in the latest session. Use broad mixed "
+            "review and older weak areas if available."
+        )
+    elif not focus:
+        lines.append(
+            "- No misses or uncertain correct answers selected for review. "
+            "Use broad mixed review and older weak areas if available."
         )
     for a in focus:
         area = a.get("area") or "General AWS"
         concept = a.get("topic") or "Unclassified"
-        selected = "; ".join(a.get("selected") or ["(no answer)"])
-        correct = "; ".join(a.get("correct") or [])
-        kind = "LOW-CONFIDENCE CORRECT" if a["is_correct"] else "MISSED"
+        confidence = a.get("confidence") or "not recorded"
+        kind = (
+            f"{confidence.upper()}-CONFIDENCE CORRECT"
+            if a["is_correct"]
+            else "MISSED"
+        )
         lines.append(
-            f"- {kind} [{area}] {concept}: selected {selected}; "
-            f"correct {correct}."
+            f"- {kind} [{area}] {concept}: confidence {confidence}; "
+            f"sources: {_sources_text(a)}."
         )
     lines += [
         "",
@@ -112,6 +150,7 @@ def write_report_bundle(
     attempts = data["attempts"]
     correct_n = sum(1 for a in attempts if a["is_correct"])
     total = len(attempts)
+    saved = len(bundle.questions)
     score = (100 * correct_n / total) if total else 0.0
     misses = [a for a in attempts if not a["is_correct"]]
     out = _create_report_directory(s, out_dir)
@@ -123,29 +162,26 @@ def write_report_bundle(
         f"- Target year: {s.get('target_year') or 'current'}",
         f"- Mode: {s.get('mode')}",
         f"- Strategy: {s.get('strategy')}",
+        f"- Answered: {total}/{saved}",
         f"- Score: {correct_n}/{total} ({score:.1f}%)",
         "",
         "## Missed areas",
         "",
     ]
     if not misses:
-        md.append("No missed questions in this session.")
+        md.append(
+            "No missed questions among the answered questions."
+            if total
+            else "No answered questions in this session."
+        )
+        md.append("")
     for idx, a in enumerate(misses, start=1):
         area = a.get("area") or "General AWS"
         selected = "; ".join(a.get("selected") or ["(no answer)"])
         correct = "; ".join(a.get("correct") or [])
         md += [
             f"### {idx}. {area}",
-            "- Sources: "
-            + "; ".join(
-                source["name"]
-                + (
-                    f" #{source['source_ref']}"
-                    if source.get("source_ref")
-                    else ""
-                )
-                for source in a.get("sources", [])
-            ),
+            f"- Sources: {_sources_text(a)}",
             f"- Topic: {a.get('topic') or 'Unclassified'}",
             f"- Answer boundary: {_answer_boundary(a)}",
             f"- Selected: {selected}",
@@ -153,6 +189,18 @@ def write_report_bundle(
             f"- Confidence: {a.get('confidence') or 'not recorded'}",
             "",
         ]
+    reinforcement = _reinforcement_candidates(data)
+    if reinforcement:
+        md += ["## Reinforcement candidates", ""]
+        for idx, a in enumerate(reinforcement, start=1):
+            md += [
+                f"### {idx}. {a.get('area') or 'General AWS'}",
+                f"- Sources: {_sources_text(a)}",
+                f"- Topic: {a.get('topic') or 'Unclassified'}",
+                "- Result: Correct",
+                f"- Confidence: {a['confidence']}",
+                "",
+            ]
     prompt = continuation_prompt(data)
     md += [
         "## Compact ChatGPT continuation prompt",
@@ -173,7 +221,7 @@ def write_report_bundle(
     context = {
         "schema_version": 2,
         "purpose": (
-            "Minimal session context pack; "
+            "Complete session context pack; "
             "local question bank remains authoritative."
         ),
         "session": s,
