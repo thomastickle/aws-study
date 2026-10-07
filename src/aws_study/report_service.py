@@ -27,6 +27,15 @@ class ReportService:
     def session_data(self, session_id: int) -> SessionData:
         """Build all exports from the same saved session membership."""
         session = self._repository.session(session_id)
+        if (
+            session["mode"] == "exam"
+            and session["source_kind"] == "interactive"
+            and session["completed_at"] is None
+        ):
+            raise ValueError(
+                f"Draft exam {session_id} is not submitted. "
+                f"Resume with quiz --resume {session_id}."
+            )
         questions = []
         attempts = []
         for record in self._repository.session_questions(session_id):

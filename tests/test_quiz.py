@@ -74,7 +74,7 @@ class QuizTests(unittest.TestCase):
         settings: dict[str, Any] = {
             "count": 2,
             "target_year": 2026,
-            "mode": "exam",
+            "mode": "study",
             "strategy": "random",
             "seed": 1,
         }
@@ -195,25 +195,29 @@ class QuizTests(unittest.TestCase):
             selected = {
                 o.id for o in question.options if o.label in selected_labels
             }
-            result = self.service.record_answer(
-                session_id,
-                question.id,
-                selected,
-                "medium",
-                1,
-            )
-            self.assertEqual(result.is_correct, selection == "reversed")
+            if selection == "reversed":
+                result = self.service.record_answer(
+                    session_id, question.id, selected, "medium", 1
+                )
+                self.assertTrue(result.is_correct)
+            else:
+                with self.assertRaisesRegex(ValueError, "exactly 2"):
+                    self.service.record_answer(
+                        session_id, question.id, selected, "medium", 1
+                    )
+                self.assertFalse(
+                    self.repository.has_attempt(session_id, question.id)
+                )
         session_id = self.session()
         single = self.service.questions(session_id)[0]
-        # Preserve incorrect scoring for excess single-select choices.
-        result = self.service.record_answer(
-            session_id,
-            single.id,
-            {o.id for o in single.options[:2]},
-            None,
-            1,
-        )
-        self.assertFalse(result.is_correct)
+        with self.assertRaisesRegex(ValueError, "exactly 1"):
+            self.service.record_answer(
+                session_id,
+                single.id,
+                {o.id for o in single.options[:2]},
+                None,
+                1,
+            )
 
     def test_failed_option_write_rolls_back_attempt_and_all_choices(self):
         session_id = self.session()
@@ -372,6 +376,10 @@ class QuizTests(unittest.TestCase):
                 nonlocal calls, selected_first
                 call = calls
                 calls += 1
+                if call == 4:
+                    return "s"
+                if call == 5:
+                    return "y"
                 if call in (1, 3):
                     return "Confident" if call == 1 else ""
                 sid = self.conn.execute(
@@ -402,7 +410,7 @@ class QuizTests(unittest.TestCase):
                         seed=1,
                     )
             self.assertIn("Score: 1/2 (50.0%)", output.getvalue())
-            self.assertIn("Select 2 answers", output.getvalue())
+            self.assertIn("Select exactly 2 answers", output.getvalue())
             if mode == "exam":
                 self.assertIn(
                     f"Q1: ✗ selected {selected_first}", output.getvalue()
@@ -423,26 +431,30 @@ class QuizTests(unittest.TestCase):
             patch("builtins.input", side_effect=["B", "e", KeyboardInterrupt]),
             redirect_stdout(StringIO()),
         ):
-            with self.assertRaises(KeyboardInterrupt):
-                run_quiz(
-                    self.service,
-                    self.cert_id,
-                    count=2,
-                    target_year=2026,
-                    mode="exam",
-                    strategy="random",
-                    seed=1,
-                )
+            session_id = run_quiz(
+                self.service,
+                self.cert_id,
+                count=2,
+                target_year=2026,
+                mode="exam",
+                strategy="random",
+                seed=1,
+            )
         self.assertEqual(
             self.conn.execute(
                 "SELECT COUNT(*) FROM attempts",
             ).fetchone()[0],
-            1,
+            0,
         )
         self.assertIsNone(
             self.conn.execute(
                 "SELECT completed_at FROM sessions",
             ).fetchone()[0]
+        )
+        self.assertTrue(
+            self.repository.responses(session_id)[
+                self.service.questions(session_id)[0].id
+            ].selected
         )
         self.assertFalse(self.conn.in_transaction)
 
@@ -472,7 +484,7 @@ class QuizTests(unittest.TestCase):
         self.conn.commit()
         for mode in ("exam", "study"):
             with self.subTest(mode=mode):
-                answers = iter(("a", "C", "a", "U"))
+                answers = iter(("a", "C", "a e", "U", "s", "y"))
                 prompts = []
 
                 def answer(prompt):

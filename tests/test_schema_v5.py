@@ -2,7 +2,7 @@
 
 import sqlite3
 
-from study_fixture import BankTestCase, question
+from study_fixture import BankTestCase, question, remove_draft_schema
 
 from aws_study.db import SCHEMA_VERSION, init_db, schema_version
 from aws_study.quiz_repository import QuizRepository
@@ -28,7 +28,7 @@ class SchemaV5Tests(BankTestCase):
             1,
             count=1,
             target_year=2026,
-            mode="exam",
+            mode="study",
             strategy="random",
             seed=2,
         )
@@ -43,6 +43,7 @@ class SchemaV5Tests(BankTestCase):
         service.finish_session(self.sid)
 
     def old_database(self, version):
+        remove_draft_schema(self.conn)
         remove_v5_invariants(self.conn)
         if version < 4:
             self.conn.execute("DROP TABLE session_answers")

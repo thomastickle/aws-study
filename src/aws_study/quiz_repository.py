@@ -6,7 +6,14 @@ import sqlite3
 from collections.abc import Sequence
 
 from .fingerprints import normalize_match_text
-from .quiz_models import AttemptHistory, Option, Question, QuestionHistory
+from .quiz_models import (
+    AttemptHistory,
+    DraftResponse,
+    Option,
+    Question,
+    QuestionHistory,
+    SavedExam,
+)
 from .repository import SQLiteRepository
 
 
@@ -201,15 +208,16 @@ class QuizRepository(SQLiteRepository):
 
     def questions(self, session_id: int) -> tuple[Question, ...]:
         """Load a session's questions and choices in their saved order."""
+        options = self._options(session_id)
         return tuple(
-            self._question(row, session_id)
+            self._question(row, options.get(row["id"], ()))
             for row in self._conn.execute(
                 """SELECT q.id, q.question_text, q.question_type, q.select_count
                    FROM session_questions sq JOIN questions q
                    ON q.id=sq.question_id WHERE sq.session_id=:session_id
                    ORDER BY sq.position""",
                 {"session_id": session_id},
-            ).fetchall()
+            )
         )
 
     def question(self, session_id: int, question_id: int) -> Question:
@@ -223,21 +231,27 @@ class QuizRepository(SQLiteRepository):
         ).fetchone()
         if row is None:
             raise ValueError("Question is not part of this session.")
-        return self._question(row, session_id)
+        return self._question(
+            row, self._options(session_id, question_id).get(question_id, ())
+        )
 
-    def _question(self, row: sqlite3.Row, session_id: int) -> Question:
-        options = self._conn.execute(
-            """SELECT a.id,a.answer_text,a.is_correct,a.rationale,sa.display_order
+    def _options(
+        self, session_id: int, question_id: int | None = None
+    ) -> dict[int, tuple[Option, ...]]:
+        """Read saved choices in one query, optionally restricted to one question."""
+        params = {"session_id": session_id}
+        where = "sa.session_id=:session_id"
+        if question_id is not None:
+            params["question_id"] = question_id
+            where += " AND sa.question_id=:question_id"
+        grouped: dict[int, list[Option]] = {}
+        for option in self._conn.execute(
+            f"""SELECT sa.question_id,a.id,a.answer_text,a.is_correct,a.rationale,sa.display_order
                FROM session_answers sa JOIN answers a ON a.id=sa.answer_id
-               WHERE sa.session_id=:session_id AND sa.question_id=:question_id
-               ORDER BY sa.display_order""",
-            {"session_id": session_id, "question_id": row["id"]},
-        ).fetchall()
-        return Question(
-            row["id"],
-            row["question_text"],
-            row["question_type"],
-            tuple(
+               WHERE {where} ORDER BY sa.question_id,sa.display_order""",
+            params,
+        ):
+            grouped.setdefault(option["question_id"], []).append(
                 Option(
                     option["id"],
                     chr(64 + option["display_order"]),
@@ -245,8 +259,16 @@ class QuizRepository(SQLiteRepository):
                     bool(option["is_correct"]),
                     option["rationale"],
                 )
-                for option in options
-            ),
+            )
+        return {qid: tuple(options) for qid, options in grouped.items()}
+
+    @staticmethod
+    def _question(row: sqlite3.Row, options: tuple[Option, ...]) -> Question:
+        return Question(
+            row["id"],
+            row["question_text"],
+            row["question_type"],
+            options,
             row["select_count"],
         )
 
@@ -270,14 +292,17 @@ class QuizRepository(SQLiteRepository):
         attempted_at: str,
         is_correct: bool,
         confidence: str | None,
-        elapsed_ms: int,
+        elapsed_ms: int | None,
     ) -> None:
         """Insert an attempt and its choices in the caller's transaction."""
         cursor = self._conn.execute(
             """INSERT INTO attempts(
-                   session_id, question_id, attempted_at, is_correct,
+                   id, session_id, question_id, attempted_at, is_correct,
                    confidence, elapsed_ms)
-               VALUES (:session_id, :question_id, :attempted_at, :is_correct,
+               VALUES ((SELECT MAX(last_id)+1 FROM (
+                   SELECT COALESCE(MAX(id),0) last_id FROM attempts
+                   UNION ALL SELECT COALESCE(MAX(id),0) FROM archived_attempts
+               )), :session_id, :question_id, :attempted_at, :is_correct,
                        :confidence, :elapsed_ms)""",
             {
                 "session_id": session_id,
@@ -317,3 +342,167 @@ class QuizRepository(SQLiteRepository):
             "WHERE id=:session_id",
             {"completed_at": completed_at, "session_id": session_id},
         )
+
+    def session(self, session_id: int) -> dict:
+        """Read mode/source/completion metadata, rejecting unknown sessions."""
+        row = self._conn.execute(
+            "SELECT * FROM sessions WHERE id=:session_id",
+            {"session_id": session_id},
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Unknown session {session_id}")
+        return dict(row)
+
+    def unfinished_exams(self, cert_id: int) -> tuple[SavedExam, ...]:
+        """Batch draft summaries without loading question text or answer keys."""
+        return tuple(
+            SavedExam(
+                row["id"],
+                row["started_at"],
+                row["answered"],
+                row["total"],
+                row["flagged"],
+            )
+            for row in self._conn.execute(
+                """WITH selections AS (
+                    SELECT session_id,question_id,COUNT(*) selected_count
+                    FROM session_response_answers GROUP BY session_id,question_id
+                ) SELECT s.id,s.started_at,COUNT(*) total,
+                    SUM(CASE WHEN choices.selected_count=q.select_count THEN 1 ELSE 0 END) answered,
+                    SUM(COALESCE(sr.flagged,0)) flagged
+                FROM sessions s JOIN session_questions sq ON sq.session_id=s.id
+                JOIN questions q ON q.id=sq.question_id
+                LEFT JOIN session_responses sr ON sr.session_id=sq.session_id
+                    AND sr.question_id=sq.question_id
+                LEFT JOIN selections choices ON choices.session_id=sq.session_id
+                    AND choices.question_id=sq.question_id
+                WHERE s.certification_id=:cert_id AND s.mode='exam'
+                    AND s.source_kind='interactive' AND s.completed_at IS NULL
+                GROUP BY s.id ORDER BY s.id DESC""",
+                {"cert_id": cert_id},
+            )
+        )
+
+    def responses(self, session_id: int) -> dict[int, DraftResponse]:
+        """Batch-load draft metadata and selections without grading them."""
+        params = {"session_id": session_id}
+        selected: dict[int, set[int]] = {}
+        for row in self._conn.execute(
+            """SELECT question_id,answer_id FROM session_response_answers
+               WHERE session_id=:session_id""",
+            params,
+        ):
+            selected.setdefault(row["question_id"], set()).add(
+                row["answer_id"]
+            )
+        return {
+            row["question_id"]: DraftResponse(
+                row["question_id"],
+                frozenset(selected.get(row["question_id"], ())),
+                row["confidence"],
+                row["elapsed_ms"],
+                bool(row["flagged"]),
+                row["first_answered_at"],
+                row["updated_at"],
+            )
+            for row in self._conn.execute(
+                "SELECT * FROM session_responses WHERE session_id=:session_id",
+                params,
+            )
+        }
+
+    def ensure_response(
+        self, session_id: int, question_id: int, now: str
+    ) -> None:
+        """Create unanswered draft metadata if no response exists."""
+        self._conn.execute(
+            """INSERT INTO session_responses(session_id,question_id,updated_at)
+               VALUES (:session_id,:question_id,:now)
+               ON CONFLICT(session_id,question_id) DO NOTHING""",
+            {"session_id": session_id, "question_id": question_id, "now": now},
+        )
+
+    def save_response(
+        self, session_id: int, question_id: int, selected: set[int], now: str
+    ) -> None:
+        """Replace a valid draft selection; retain confidence and flag state."""
+        self.ensure_response(session_id, question_id, now)
+        params = {
+            "session_id": session_id,
+            "question_id": question_id,
+            "now": now,
+        }
+        self._conn.execute(
+            """UPDATE session_responses SET first_answered_at=COALESCE(first_answered_at,:now),
+               updated_at=:now WHERE session_id=:session_id AND question_id=:question_id""",
+            params,
+        )
+        self._conn.execute(
+            """DELETE FROM session_response_answers WHERE session_id=:session_id
+               AND question_id=:question_id""",
+            params,
+        )
+        self._conn.executemany(
+            """INSERT INTO session_response_answers(session_id,question_id,answer_id)
+               VALUES (:session_id,:question_id,:answer_id)""",
+            [{**params, "answer_id": aid} for aid in sorted(selected)],
+        )
+
+    def update_confidence(
+        self,
+        session_id: int,
+        question_id: int,
+        confidence: str | None,
+        now: str,
+    ) -> None:
+        """Replace confidence without changing the draft selection."""
+        self.ensure_response(session_id, question_id, now)
+        self._conn.execute(
+            """UPDATE session_responses SET confidence=:confidence,updated_at=:now
+               WHERE session_id=:session_id AND question_id=:question_id""",
+            {
+                "session_id": session_id,
+                "question_id": question_id,
+                "confidence": confidence,
+                "now": now,
+            },
+        )
+
+    def toggle_flag(self, session_id: int, question_id: int, now: str) -> None:
+        """Toggle a saved review flag independently of answering."""
+        self.ensure_response(session_id, question_id, now)
+        self._conn.execute(
+            """UPDATE session_responses SET flagged=1-flagged,updated_at=:now
+               WHERE session_id=:session_id AND question_id=:question_id""",
+            {"session_id": session_id, "question_id": question_id, "now": now},
+        )
+
+    def add_elapsed(
+        self, session_id: int, question_id: int, elapsed_ms: int, now: str
+    ) -> None:
+        """Accumulate a measured interval in the caller transaction."""
+        self.ensure_response(session_id, question_id, now)
+        self._conn.execute(
+            """UPDATE session_responses SET elapsed_ms=COALESCE(elapsed_ms,0)+:elapsed_ms,
+               updated_at=:now WHERE session_id=:session_id AND question_id=:question_id""",
+            {
+                "session_id": session_id,
+                "question_id": question_id,
+                "elapsed_ms": elapsed_ms,
+                "now": now,
+            },
+        )
+
+    def attempt_selections(self, session_id: int) -> dict[int, set[int]]:
+        """Load finalized selections for idempotent submission results."""
+        selected: dict[int, set[int]] = {}
+        for row in self._conn.execute(
+            """SELECT a.question_id,ao.option_id FROM attempts a
+               JOIN attempt_options ao ON ao.attempt_id=a.id
+               WHERE a.session_id=:session_id AND ao.selected=1""",
+            {"session_id": session_id},
+        ):
+            selected.setdefault(row["question_id"], set()).add(
+                row["option_id"]
+            )
+        return selected

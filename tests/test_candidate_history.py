@@ -16,7 +16,7 @@ class CandidateHistoryTests(BankTestCase):
                 1,
                 count=3,
                 target_year=2026,
-                mode="exam",
+                mode="study",
                 strategy="random",
                 seed=run,
             )

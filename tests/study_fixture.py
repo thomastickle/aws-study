@@ -108,3 +108,14 @@ class BankTestCase(unittest.TestCase):
         path = self.root / "bank.json"
         path.write_text(json.dumps(data), encoding="utf-8")
         return import_internal_bank(self.conn, path)
+
+
+def remove_draft_schema(conn):
+    """Remove v6-only tables when constructing an older synthetic database."""
+    for table in (
+        "session_response_answers",
+        "session_responses",
+        "archived_attempt_options",
+        "archived_attempts",
+    ):
+        conn.execute(f"DROP TABLE IF EXISTS {table}")

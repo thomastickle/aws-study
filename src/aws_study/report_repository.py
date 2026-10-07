@@ -39,8 +39,11 @@ class ReportRepository(SQLiteRepository):
         """Batch-load every saved question, including unanswered questions."""
         params = {"session_id": session_id}
         questions = self._conn.execute(
-            """SELECT q.*,sq.position,g.group_key selection_group
+            """SELECT q.*,sq.position,g.group_key selection_group,
+                      COALESCE(sr.flagged,0) flagged
                FROM session_questions sq JOIN questions q ON q.id=sq.question_id
+               LEFT JOIN session_responses sr ON sr.session_id=sq.session_id
+                   AND sr.question_id=sq.question_id
                LEFT JOIN question_selection_groups g ON g.question_id=q.id
                WHERE sq.session_id=:session_id ORDER BY sq.position""",
             params,
@@ -81,6 +84,7 @@ class ReportRepository(SQLiteRepository):
         for row in questions:
             question = dict(row)
             question_id = question["id"]
+            question["flagged"] = bool(question["flagged"])
             if not answers[question_id]:
                 raise ValueError(
                     f"Session {session_id} question {question_id} "

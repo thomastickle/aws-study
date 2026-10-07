@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from importlib.resources import files
+
 from .repository import SQLiteRepository
 
 TABLES = (
@@ -30,12 +32,47 @@ class MigrationRepository(SQLiteRepository):
 
     def history_counts(self) -> dict[str, int]:
         """Read preservation counts from a consistent canonical snapshot."""
-        return {
-            table: self._conn.execute(
+        tables = {
+            r[0]
+            for r in self._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        counts = {}
+        for table in HISTORY_TABLES:
+            count = self._conn.execute(
                 f"SELECT COUNT(*) FROM {table}"
             ).fetchone()[0]
-            for table in HISTORY_TABLES
-        }
+            archive = {
+                "attempts": "archived_attempts",
+                "attempt_options": "archived_attempt_options",
+            }.get(table)
+            if archive in tables:
+                count += self._conn.execute(
+                    f"SELECT COUNT(*) FROM {archive}"
+                ).fetchone()[0]
+            counts[table] = count
+        for table in ("session_responses", "session_response_answers"):
+            if table in tables:
+                counts[table] = self._conn.execute(
+                    f"SELECT COUNT(*) FROM {table}"
+                ).fetchone()[0]
+        return counts
+
+    def convert_unfinished_exams(self) -> None:
+        """Archive original records and turn unfinished legacy exams into drafts.
+
+        Execute inside the migration's existing transaction. The shared SQL is
+        also applied by the v6 schema upgrade, without opening another boundary.
+        """
+        script = (
+            files("aws_study")
+            .joinpath("schema_v6_draft_conversion.sql")
+            .read_text(encoding="utf-8")
+        )
+        for statement in script.split(";"):
+            if statement.strip():
+                self._conn.execute(statement)
 
     def snapshot(self) -> dict[str, list[dict]]:
         """Read all legacy records from one consistent source transaction."""
@@ -81,17 +118,18 @@ class MigrationRepository(SQLiteRepository):
             )
         if self._conn.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
             raise ValueError("Destination integrity check failed")
+        actual_counts = self.history_counts()
         for table, expected in expected_counts.items():
-            if table not in HISTORY_TABLES:
+            if table not in actual_counts:
                 raise ValueError(f"Unknown validation table {table}")
-            actual = self._conn.execute(
-                f"SELECT COUNT(*) FROM {table}"
-            ).fetchone()[0]
+            actual = actual_counts[table]
             if actual != expected:
                 raise ValueError(
                     f"{table}: expected {expected}, found {actual}"
                 )
         checks = {
+            "archived attempt identity reused": """
+                SELECT a.id FROM main.attempts a JOIN archived_attempts old ON old.id=a.id""",
             "incomplete session answer order": """
                 SELECT sq.question_id FROM session_questions sq
                 WHERE (SELECT COUNT(*) FROM session_answers sa WHERE
@@ -139,6 +177,15 @@ class MigrationRepository(SQLiteRepository):
                             AND ao.option_id=ans.id AND ao.selected=1)))""",
         }
         for label, sql in checks.items():
+            sql = """WITH history_attempts AS (
+                SELECT * FROM attempts UNION ALL SELECT * FROM archived_attempts
+            ), history_options AS (
+                SELECT * FROM attempt_options UNION ALL SELECT * FROM archived_attempt_options
+            ) """ + sql.replace(
+                "FROM attempts", "FROM history_attempts"
+            ).replace("JOIN attempts", "JOIN history_attempts").replace(
+                "FROM attempt_options", "FROM history_options"
+            )
             failures = [r[0] for r in self._conn.execute(sql)]
             if failures:
                 raise ValueError(

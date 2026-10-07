@@ -5,7 +5,7 @@ import sqlite3
 from contextlib import redirect_stdout
 from io import StringIO
 
-from study_fixture import BankTestCase, question
+from study_fixture import BankTestCase, question, remove_draft_schema
 
 from aws_study.cli import main
 from aws_study.db import SCHEMA_VERSION, init_db
@@ -33,7 +33,7 @@ class SelectionGroupTests(BankTestCase):
             1,
             count=3,
             target_year=2026,
-            mode="exam",
+            mode="study",
             strategy="random",
             seed=0,
         )
@@ -254,6 +254,7 @@ class SamplerTests(BankTestCase):
 
     def test_v2_upgrade_preserves_rows_and_is_idempotent(self):
         self.import_questions([question()])
+        remove_draft_schema(self.conn)
         self.conn.execute("DROP INDEX idx_attempt_session_question")
         self.conn.execute("DROP INDEX idx_attempt_question_recent")
         self.conn.execute("DROP TRIGGER attempts_nonnegative_elapsed_insert")

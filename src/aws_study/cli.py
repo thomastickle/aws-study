@@ -19,7 +19,7 @@ from .importers import import_bank, preview_bank
 from .migrations import migrate_db
 from .question_group_repository import QuestionGroupRepository
 from .question_group_service import QuestionGroupService
-from .quiz import run_quiz
+from .quiz import choose_saved_exam, run_exam, run_quiz
 from .quiz_repository import QuizRepository
 from .quiz_service import QuizService
 from .report_repository import ReportRepository
@@ -116,23 +116,57 @@ def cmd_question_group(args: argparse.Namespace) -> None:
 
 def cmd_quiz(args: argparse.Namespace) -> None:
     """Run an interactive session and export its prepared report."""
+    selection_args = (
+        args.count,
+        args.year,
+        args.mode,
+        args.strategy,
+        args.seed,
+        args.include_unverified,
+        args.provider,
+    )
+    if args.resume is not None and any(
+        value is not None for value in selection_args
+    ):
+        raise ValueError(
+            "--resume cannot be combined with question-selection options."
+        )
+    if args.width < 1:
+        raise ValueError("Wrap width must be at least 1.")
     with closing(_db(args)) as conn:
-        certification_id = CertificationRepository(conn).require_id(
-            args.cert,
-            args.provider,
-        )
         service = QuizService(QuizRepository(conn))
-        session_id = run_quiz(
-            service,
-            certification_id,
-            count=args.count,
-            target_year=args.year,
-            mode=args.mode,
-            strategy=args.strategy,
-            seed=args.seed,
-            include_unverified=args.include_unverified,
-            width=args.width,
-        )
+        if args.resume is not None:
+            session_id = run_exam(service, args.resume, width=args.width)
+        else:
+            certification_id = CertificationRepository(conn).require_id(
+                args.cert, args.provider or "AWS"
+            )
+            mode = args.mode or "exam"
+            resume = (
+                choose_saved_exam(service, certification_id, width=args.width)
+                if mode == "exam"
+                else None
+            )
+            if resume == 0:
+                return
+            if resume is not None:
+                session_id = run_exam(service, resume, width=args.width)
+            else:
+                session_id = run_quiz(
+                    service,
+                    certification_id,
+                    count=20 if args.count is None else args.count,
+                    target_year=datetime.now().year
+                    if args.year is None
+                    else args.year,
+                    mode=mode,
+                    strategy=args.strategy or "adaptive",
+                    seed=args.seed,
+                    include_unverified=bool(args.include_unverified),
+                    width=args.width,
+                )
+        if not service.is_complete(session_id):
+            return
         bundle = ReportService(ReportRepository(conn)).bundle(session_id)
     paths = write_report_bundle(bundle, args.reports)
     print(f"\nSession {session_id} saved.")
@@ -278,24 +312,31 @@ def build_parser() -> argparse.ArgumentParser:
     x.add_argument("question_ids", nargs="+", type=int)
     x.set_defaults(func=cmd_question_group)
 
-    x = sub.add_parser("quiz", help="Run a random/adaptive mini exam")
-    x.add_argument("--provider", default="AWS")
-    x.add_argument("--cert", required=True)
-    x.add_argument("-n", "--count", type=int, default=20)
+    x = sub.add_parser("quiz", help="Run or resume a random/adaptive exam")
+    start = x.add_mutually_exclusive_group(required=True)
+    start.add_argument("--cert", help="Certification for a new quiz")
+    start.add_argument(
+        "--resume", type=int, help="Resume a saved interactive exam"
+    )
+    x.add_argument("--provider", help="Provider for a new quiz (default: AWS)")
+    x.add_argument(
+        "-n", "--count", type=int, help="Question count (default: 20)"
+    )
     x.add_argument(
         "--year",
         type=int,
-        default=datetime.now().year,
-        help="Target exam year; defaults to the current local year",
+        help="Target exam year (default: current local year)",
     )
-    x.add_argument("--mode", choices=["exam", "study"], default="exam")
+    x.add_argument(
+        "--mode", choices=["exam", "study"], help="Quiz mode (default: exam)"
+    )
     x.add_argument(
         "--strategy",
         choices=["adaptive", "random", "weak", "new"],
-        default="adaptive",
+        help="Selection strategy (default: adaptive)",
     )
     x.add_argument("--seed", type=int)
-    x.add_argument("--include-unverified", action="store_true")
+    x.add_argument("--include-unverified", action="store_true", default=None)
     x.add_argument(
         "--width",
         type=int,

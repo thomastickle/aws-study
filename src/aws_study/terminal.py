@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+import sys
 import textwrap
 
 DEFAULT_WIDTH = 80
@@ -62,13 +63,15 @@ def print_wrapped(
     preferred_width: int = DEFAULT_WIDTH,
     initial_indent: str = "",
     subsequent_indent: str = "",
+    bold: bool = False,
 ) -> None:
-    """Print using the current terminal size, including after a resize."""
-    print(
-        wrap_text(
-            text,
-            width=terminal_width(preferred_width),
-            initial_indent=initial_indent,
-            subsequent_indent=subsequent_indent,
-        )
+    """Wrap before styling; omit terminal escapes when output is redirected."""
+    rendered = wrap_text(
+        text,
+        width=terminal_width(preferred_width),
+        initial_indent=initial_indent,
+        subsequent_indent=subsequent_indent,
     )
+    if bold and sys.stdout.isatty():
+        rendered = f"\033[1m{rendered}\033[0m"
+    print(rendered)

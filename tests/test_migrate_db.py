@@ -7,7 +7,7 @@ from importlib.resources import files
 from io import StringIO
 from unittest.mock import patch
 
-from study_fixture import BankTestCase, question
+from study_fixture import BankTestCase, question, remove_draft_schema
 from test_migrations import legacy_fixture
 from test_schema_v5 import remove_v5_invariants
 
@@ -34,7 +34,7 @@ class DatabaseMigrationTests(BankTestCase):
             1,
             count=2,
             target_year=2026,
-            mode="exam",
+            mode="study",
             strategy="random",
             seed=1,
         )
@@ -49,7 +49,9 @@ class DatabaseMigrationTests(BankTestCase):
         service.finish_session(sid)
 
     def downgrade(self, version):
-        remove_v5_invariants(self.conn)
+        remove_draft_schema(self.conn)
+        if version < 5:
+            remove_v5_invariants(self.conn)
         if version < 4:
             self.conn.execute("DROP TABLE session_answers")
             self.conn.execute("DROP INDEX idx_answer_question_identity")
@@ -76,9 +78,9 @@ class DatabaseMigrationTests(BankTestCase):
     def test_canonical_versions_migrate_with_wal_history_and_saved_answer_order(
         self,
     ):
-        for version in (2, 3, 4, 5):
+        for version in (2, 3, 4, 5, 6):
             with self.subTest(version=version):
-                if version != 5:
+                if version != 6:
                     self.downgrade(version)
                 before = self.snapshot(self.conn)
                 source_bytes = self.source.read_bytes()

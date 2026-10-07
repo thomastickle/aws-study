@@ -8,12 +8,13 @@ from importlib.resources import files
 from pathlib import Path
 
 DEFAULT_DB = Path("private/aws-study.db")
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 MIGRATION_SCRIPTS = {
     2: "schema.sql",
     3: "schema_v3.sql",
     4: "schema_v4.sql",
     5: "schema_v5.sql",
+    6: "schema_v6.sql",
 }
 
 
@@ -105,7 +106,7 @@ def schema_version(conn: sqlite3.Connection) -> int:
         "attempt_options": {"attempt_id", "option_id", "selected"},
         "review_notes": {"id", "question_id", "certification_id", "note_text"},
     }
-    if version in (2, 3, 4, 5) and required.keys() <= tables:
+    if version in (2, 3, 4, 5, 6) and required.keys() <= tables:
         for table, expected in required.items():
             columns = {
                 r[1] for r in conn.execute(f"PRAGMA table_info({table})")
@@ -156,6 +157,77 @@ def schema_version(conn: sqlite3.Connection) -> int:
                 raise ValueError(
                     "Incomplete v5 schema: missing attempt invariants"
                 )
+        if version >= 6:
+            draft_tables = {
+                "session_responses": {
+                    "session_id",
+                    "question_id",
+                    "confidence",
+                    "elapsed_ms",
+                    "flagged",
+                    "first_answered_at",
+                    "updated_at",
+                },
+                "session_response_answers": {
+                    "session_id",
+                    "question_id",
+                    "answer_id",
+                },
+                "archived_attempts": required["attempts"]
+                | {"attempted_at", "source_kind", "note"},
+                "archived_attempt_options": {
+                    "attempt_id",
+                    "option_id",
+                    "selected",
+                },
+            }
+            for table, expected in draft_tables.items():
+                columns = {
+                    r[1] for r in conn.execute(f"PRAGMA table_info({table})")
+                }
+                if not expected <= columns:
+                    raise ValueError(
+                        f"Incomplete v6 schema: missing columns in {table}"
+                    )
+            expected_keys: dict[
+                str, set[tuple[str, tuple[str, ...], tuple[str, ...]]]
+            ] = {
+                "session_responses": {
+                    (
+                        "session_questions",
+                        ("session_id", "question_id"),
+                        ("session_id", "question_id"),
+                    )
+                },
+                "session_response_answers": {
+                    (
+                        "session_responses",
+                        ("session_id", "question_id"),
+                        ("session_id", "question_id"),
+                    ),
+                    (
+                        "session_answers",
+                        ("session_id", "question_id", "answer_id"),
+                        ("session_id", "question_id", "answer_id"),
+                    ),
+                },
+            }
+            for table, expected_foreign_keys in expected_keys.items():
+                grouped: dict[int, list] = {}
+                for row in conn.execute(f"PRAGMA foreign_key_list({table})"):
+                    grouped.setdefault(row[0], []).append(row)
+                actual = {
+                    (
+                        rows[0][2],
+                        tuple(r[3] for r in rows),
+                        tuple(r[4] for r in rows),
+                    )
+                    for rows in grouped.values()
+                }
+                if not expected_foreign_keys <= actual:
+                    raise ValueError(
+                        f"Incomplete v6 schema: missing draft foreign keys in {table}"
+                    )
         return version
     raise ValueError(f"Unsupported database schema (user_version={version})")
 
@@ -199,6 +271,10 @@ def init_db(conn: sqlite3.Connection) -> None:
         files("aws_study").joinpath(name).read_text(encoding="utf-8")
         for name in scripts
     )
+    if version < 6:
+        schema += "\n" + files("aws_study").joinpath(
+            "schema_v6_draft_conversion.sql"
+        ).read_text(encoding="utf-8")
     # SQLite cannot enable foreign keys once a transaction has started.
     conn.execute("PRAGMA foreign_keys = ON")
     try:
