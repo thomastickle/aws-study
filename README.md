@@ -295,7 +295,30 @@ Learning reports are generated after submission.
 
 1. `session-<id>-report.md` — score plus the **curated area/topic for each missed question**, selected answer, correct answer, confidence, an optional section for correct low- or medium-confidence answers, and a compact continuation prompt.
 2. `session-<id>-prompt.txt` — only the compact ChatGPT continuation prompt: misses first, then correct low- and medium-confidence answers. Its summaries contain topics, sources, and confidence, without selected or correct answers.
-3. `session-<id>-context.json` — a complete schema-v2 session record containing every saved question in quiz order, with the saved answer order/letters, full wording, answers, rationales, and all source occurrences. Each question includes `position`, `result` (correctness, confidence, elapsed milliseconds), `selected_answers`, and `correct_answers`. Questions include a boolean `flagged` field. Unanswered questions in historical/study reports have `result: null` and an empty selected-answer list.
+3. `session-<id>-context.json` — a complete schema-v3 session record containing every saved question in quiz order, with the saved answer order/letters, full wording, answers, rationales, and all source occurrences. Each question includes `position`, `result` (correctness, confidence, elapsed milliseconds), `selected_answer_ids`, and `correct_answer_ids`. Questions include a boolean `flagged` field. Unanswered questions in historical/study reports have `result: null` and an empty selected-ID list.
+
+Full answer details appear once in each question's `answers` array. Selected and
+correct ID lists resolve against that array, in displayed order. Source answer
+references contain `answer_id` and `source_order`, preserving source ordering
+independently of displayed labels. A source reference inherits the displayed
+answer's rationale unless it contains a `rationale` override; explicit `null`
+or empty-string overrides preserve the source's absence of explanation.
+
+For example, if `answers` contains an answer with `id: 52`, then
+`"selected_answer_ids": [52]` identifies that choice, and a source reference
+`{"answer_id": 52, "source_order": 1}` identifies its original source position.
+No database lookup is needed. Source provenance retains verification origin and
+validity years alongside source identity, reference, type, and verification
+status/year. Redundant database linkage fields, fingerprints, and creation
+timestamps are omitted from exported question/source records. Question/answer
+IDs remain identifiers within the context pack; they need no external database.
+
+Context schema 3 replaces the previous full selected/correct objects with ID
+references. Existing version-2 exports remain untouched; new exports use only
+version 3. SQLite schema 6 and question-bank schema 2 are unchanged. Both the
+attached session context and local bank supply exact wording and answers; the
+compact prompt supplies learning-state metadata and keeps its instruction to
+avoid revealing prior answers before you respond.
 
 Regenerating creates another export folder. If names collide within the same
 second, a numeric suffix is added to the timestamp folder. `--reports PATH`

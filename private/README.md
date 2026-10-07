@@ -35,16 +35,29 @@ format. The obsolete file is retained as a legacy archive.
 
 Each new context JSON retains every saved session question in quiz order, plus
 its saved answer letters, complete answers/rationales, source provenance,
-selected/correct answers, and result (correctness, confidence, elapsed time).
+selected/correct answer IDs, and result (correctness, confidence, elapsed time).
 Context questions include boolean `flagged` state. Unanswered historical/study
-questions remain present with `result: null`. Context schema version
-2 is retained with these additive fields. Existing reports are not rewritten.
+questions remain present with `result: null` and empty `selected_answer_ids`.
+New exports use context schema 3; existing reports are not rewritten. Database
+schema 6 and question-bank schema 2 are unchanged.
+
+Each question's `answers` holds full answer details once. `selected_answer_ids`
+and `correct_answer_ids` resolve locally against those answers in displayed
+order. Each source retains independent `answer_id`/`source_order` references.
+A source rationale inherits the displayed rationale when absent; a differing
+`rationale` override, including explicit `null` or empty text, preserves the
+source explanation exactly. Provenance retains verification origin and validity
+years; redundant database linkage fields, fingerprints, and creation timestamps
+are omitted from question/source records. The pack remains self-contained.
 
 The compact prompt prioritizes misses, then correct low- and medium-confidence
 answers, without including selected or correct answer text. The Markdown report
-keeps detailed missed-answer review and adds reinforcement candidates only when
-needed. Incomplete study/baseline reports show answered versus saved counts and score only
-answered questions. No older-history analysis is added.
+and prompt now recognize the attached session context or local question bank as
+the source of exact wording and answers. The no-answer-leak instruction remains.
+The Markdown report keeps detailed missed-answer review and adds reinforcement
+candidates only when needed. Incomplete study/baseline reports show answered
+versus saved counts and score only answered questions. No older-history analysis
+is added.
 
 Schema 6 persists exam drafts, selections, confidence, flags, and active-question
 time. Unfinished interactive exam attempts from older databases move into an

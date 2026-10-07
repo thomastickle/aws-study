@@ -1,3 +1,4 @@
+import copy
 import json
 import tempfile
 import unittest
@@ -271,7 +272,7 @@ class ReportingTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "No interactive sessions"):
             self.reports.resolve_session("latest")
 
-    def _session(self, count, *, multi_select=False):
+    def _session(self, count, *, multi_select=False, seed=7):
         questions = []
         for index in range(1, count + 1):
             question = fixture_question(index)
@@ -305,7 +306,7 @@ class ReportingTests(unittest.TestCase):
             target_year=2026,
             mode="study",
             strategy="random",
-            seed=7,
+            seed=seed,
         )
         return service, session_id, service.questions(session_id)
 
@@ -313,6 +314,7 @@ class ReportingTests(unittest.TestCase):
         bundle = self.reports.bundle(session_id)
         paths = write_report_bundle(bundle, self.root / "exports")
         context = json.loads(paths["context"].read_text(encoding="utf-8"))
+        self._assert_context_reconstructs_session(session_id, context)
         report = paths["report"].read_text(encoding="utf-8")
         prompt = paths["prompt"].read_text(encoding="utf-8").rstrip("\n")
         self.assertEqual(context["continuation_prompt"], prompt)
@@ -333,6 +335,75 @@ class ReportingTests(unittest.TestCase):
         self.assertEqual(output.getvalue(), prompt + "\n")
         return bundle, context, report, prompt
 
+    def _assert_context_reconstructs_session(self, session_id, context):
+        originals = ReportRepository(self.conn).session_questions(session_id)
+        self.assertEqual(len(context["questions"]), len(originals))
+        for question, original in zip(context["questions"], originals):
+            answers = {a["id"]: a for a in question["answers"]}
+            self.assertEqual(len(answers), len(original.answers))
+            self.assertEqual(
+                len(question["sources"]), len(original.details["sources"])
+            )
+            for answer in answers.values():
+                self.assertIsInstance(answer["is_correct"], bool)
+            self.assertNotIn("selected_answers", question)
+            self.assertNotIn("correct_answers", question)
+            for field in (
+                "content_fingerprint",
+                "created_at",
+                "certification_id",
+            ):
+                self.assertNotIn(field, question)
+            self.assertEqual(
+                set(question["selected_answer_ids"]),
+                original.selected_answer_ids,
+            )
+            self.assertEqual(
+                question["correct_answer_ids"],
+                [a["id"] for a in original.answers if a["is_correct"]],
+            )
+            for source, raw in zip(
+                question["sources"], original.details["sources"]
+            ):
+                self.assertTrue(
+                    {
+                        "source_key",
+                        "name",
+                        "source_ref",
+                        "source_order",
+                        "source_type",
+                        "observed_year",
+                        "verification_status",
+                        "verified_year",
+                        "verification_origin",
+                        "valid_from_year",
+                        "valid_to_year",
+                    }
+                    <= source.keys()
+                )
+                for field, value in source.items():
+                    if field != "answers":
+                        self.assertEqual(value, raw[field])
+                for field in ("id", "question_id", "source_id", "created_at"):
+                    self.assertNotIn(field, source)
+                self.assertEqual(len(source["answers"]), len(raw["answers"]))
+                for ref, answer in zip(source["answers"], raw["answers"]):
+                    full = answers[ref["answer_id"]]
+                    self.assertEqual(full["id"], answer["id"])
+                    self.assertEqual(
+                        full["answer_text"], answer["answer_text"]
+                    )
+                    self.assertEqual(
+                        ref["source_order"], answer["source_order"]
+                    )
+                    self.assertEqual(
+                        ref.get("rationale", full["rationale"]),
+                        answer["rationale"],
+                    )
+                    self.assertNotIn("answer_text", ref)
+                    if answer["rationale"] == full["rationale"]:
+                        self.assertNotIn("rationale", ref)
+
     def test_perfect_sessions_export_all_questions_and_saved_answer_order(
         self,
     ):
@@ -349,7 +420,7 @@ class ReportingTests(unittest.TestCase):
                     )
                 service.finish_session(session_id)
                 bundle, context, report, prompt = self._export(session_id)
-                self.assertEqual(context["schema_version"], 2)
+                self.assertEqual(context["schema_version"], 3)
                 self.assertEqual(len(context["questions"]), count)
                 self.assertEqual(
                     [q["id"] for q in context["questions"]],
@@ -385,7 +456,8 @@ class ReportingTests(unittest.TestCase):
                         [o.rationale for o in original.options],
                     )
                     self.assertEqual(
-                        record["selected_answers"], record["correct_answers"]
+                        record["selected_answer_ids"],
+                        record["correct_answer_ids"],
                     )
                     self.assertNotIn(record["topic"], prompt)
                 self.assertNotIn("## Reinforcement candidates", report)
@@ -436,9 +508,12 @@ class ReportingTests(unittest.TestCase):
             self.assertNotIn(topics[index], prompt)
         self.assertIn("report-fixtures #", prompt)
         self.assertIn(
-            "Do not reveal or hint at answers from prior attempts", prompt
+            "Do not reveal or hint at answers from prior attempts before I respond.",
+            prompt,
         )
-        self.assertIn("attached/local question bank", prompt)
+        self.assertIn(
+            "attached session context or local question bank", prompt
+        )
         self.assertLess(len(prompt), 3000)
         section = report.split("## Reinforcement candidates", 1)[1].split(
             "## Compact ChatGPT", 1
@@ -461,7 +536,7 @@ class ReportingTests(unittest.TestCase):
         self.assertIn(topics[0], filtered)
 
     def test_multiple_sources_keep_their_answers_and_rationales(self):
-        service, session_id, questions = self._session(1)
+        service, session_id, questions = self._session(1, seed=1)
         duplicate = v2_bank(
             self.fixture_bank["questions"], cert="REPORT-C01", source="other"
         )
@@ -498,6 +573,60 @@ class ReportingTests(unittest.TestCase):
             [a["id"] for a in record["answers"]],
             [o.id for o in question.options],
         )
+        source_orders = [
+            [a["answer_id"] for a in source["answers"]]
+            for source in record["sources"]
+        ]
+        self.assertEqual(source_orders[0], list(reversed(source_orders[1])))
+        self.assertNotEqual(
+            source_orders[0], [a["id"] for a in record["answers"]]
+        )
+
+    def test_null_and_empty_source_rationales_override_displayed_text(self):
+        service, session_id, questions = self._session(1)
+        for key, rationale in (
+            ("no-rationale", None),
+            ("empty-rationale", ""),
+        ):
+            duplicate = copy.deepcopy(self.fixture_bank)
+            duplicate["source"]["key"] = key
+            duplicate["questions"][0]["answers"][0]["rationale"] = rationale
+            path = self.root / f"{key}.json"
+            path.write_text(json.dumps(duplicate), encoding="utf-8")
+            import_internal_bank(self.conn, path)
+        q = questions[0]
+        service.record_answer(
+            session_id,
+            q.id,
+            {o.id for o in q.options if not o.correct},
+            "high",
+            3,
+        )
+        service.finish_session(session_id)
+        _, context, _, _ = self._export(session_id)
+        sources = context["questions"][0]["sources"]
+        self.assertNotIn("rationale", sources[0]["answers"][0])
+        self.assertIn("rationale", sources[1]["answers"][0])
+        self.assertIsNone(sources[1]["answers"][0]["rationale"])
+        self.assertEqual(sources[2]["answers"][0]["rationale"], "")
+
+    def test_bundle_renders_and_resolves_answers_without_live_database(self):
+        bundle = self.reports.bundle(self.session_id)
+        self.conn.close()
+        paths = write_report_bundle(bundle, self.root / "offline")
+        context = json.loads(paths["context"].read_text(encoding="utf-8"))
+        question = context["questions"][0]
+        answers = {a["id"]: a for a in question["answers"]}
+        selected = answers[question["selected_answer_ids"][0]]
+        correct = answers[question["correct_answer_ids"][0]]
+        self.assertEqual(
+            f"{selected['label']}. {selected['answer_text']}",
+            self.selected_text,
+        )
+        self.assertEqual(
+            f"{correct['label']}. {correct['answer_text']}", self.correct_text
+        )
+        self.assertIn("exact question wording and answers", context["purpose"])
 
     def test_multi_select_exports_complete_selected_and_correct_sets(self):
         service, session_id, questions = self._session(2, multi_select=True)
@@ -521,18 +650,23 @@ class ReportingTests(unittest.TestCase):
         ):
             self.assertEqual(record["question_type"], "multi_select")
             self.assertEqual(record["select_count"], 2)
-            self.assertEqual(len(record["selected_answers"]), 2)
-            self.assertEqual(len(record["correct_answers"]), 2)
+            self.assertEqual(len(record["selected_answer_ids"]), 2)
+            self.assertEqual(len(record["correct_answer_ids"]), 2)
             self.assertEqual(record["result"]["is_correct"], index == 0)
             correct_ids = {o.id for o in question.options if o.correct}
-            self.assertEqual(
-                {a["id"] for a in record["correct_answers"]}, correct_ids
-            )
-            selected_ids = {a["id"] for a in record["selected_answers"]}
+            self.assertEqual(set(record["correct_answer_ids"]), correct_ids)
+            selected_ids = set(record["selected_answer_ids"])
             self.assertEqual(selected_ids == correct_ids, index == 0)
+            by_id = {a["id"]: a for a in record["answers"]}
             self.assertEqual(
-                [a["display_order"] for a in record["selected_answers"]],
-                sorted(a["display_order"] for a in record["selected_answers"]),
+                [
+                    by_id[aid]["display_order"]
+                    for aid in record["selected_answer_ids"]
+                ],
+                sorted(
+                    by_id[aid]["display_order"]
+                    for aid in record["selected_answer_ids"]
+                ),
             )
 
     def test_unanswered_questions_remain_visible_and_do_not_count_as_misses(
@@ -580,8 +714,8 @@ class ReportingTests(unittest.TestCase):
                         )
                     else:
                         self.assertIsNone(record["result"])
-                        self.assertEqual(record["selected_answers"], [])
-                    self.assertTrue(record["correct_answers"])
+                        self.assertEqual(record["selected_answer_ids"], [])
+                    self.assertTrue(record["correct_answer_ids"])
                     self.assertTrue(record["answers"])
 
     def test_session_queries_are_batched_and_do_not_write(self):

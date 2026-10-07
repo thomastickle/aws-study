@@ -133,7 +133,8 @@ def continuation_prompt(
     lines += [
         "",
         "Question-source rule: exact question wording/answers must come from "
-        "the attached/local question bank, not from this summary. Treat this "
+        "the attached session context or local question bank, not from this "
+        "summary. Treat this "
         "prompt as learning-state metadata only.",
     ]
     return "\n".join(lines)
@@ -219,10 +220,11 @@ def write_report_bundle(
     prompt_path.write_text(prompt + "\n", encoding="utf-8")
 
     context = {
-        "schema_version": 2,
+        "schema_version": 3,
         "purpose": (
             "Complete session context pack; "
-            "local question bank remains authoritative."
+            "exact question wording and answers are available here "
+            "or in the local question bank."
         ),
         "session": s,
         "continuation_prompt": prompt,
