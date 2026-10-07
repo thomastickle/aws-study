@@ -14,12 +14,13 @@ from pathlib import Path
 from .bank_schema import BankValidationError, load_bank
 from .certification_repository import CertificationRepository
 from .db import DEFAULT_DB, SCHEMA_VERSION, connect, init_db, open_readonly
+from .exam_ui import choose_saved_exam, run_exam
 from .import_models import ImportSummary
 from .importers import import_bank, preview_bank
 from .migrations import migrate_db
 from .question_group_repository import QuestionGroupRepository
 from .question_group_service import QuestionGroupService
-from .quiz import choose_saved_exam, run_exam, run_quiz
+from .quiz import run_quiz
 from .quiz_repository import QuizRepository
 from .quiz_service import QuizService
 from .report_repository import ReportRepository
@@ -167,7 +168,7 @@ def cmd_quiz(args: argparse.Namespace) -> None:
                 )
         if not service.is_complete(session_id):
             return
-        bundle = ReportService(ReportRepository(conn)).bundle(session_id)
+        bundle = ReportService(ReportRepository(conn)).session_data(session_id)
     paths = write_report_bundle(bundle, args.reports)
     print(f"\nSession {session_id} saved.")
     for kind, path in paths.items():
@@ -178,7 +179,7 @@ def cmd_report(args: argparse.Namespace) -> None:
     """Regenerate an export for the requested session."""
     with closing(_db(args)) as conn:
         service = ReportService(ReportRepository(conn))
-        bundle = service.bundle(service.resolve_session(args.session))
+        bundle = service.session_data(service.resolve_session(args.session))
     for kind, path in write_report_bundle(bundle, args.reports).items():
         print(f"{kind}: {path}")
 

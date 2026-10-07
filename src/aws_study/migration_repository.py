@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from importlib.resources import files
 
+from .db import execute_migration_script
 from .repository import SQLiteRepository
 
 TABLES = (
@@ -70,9 +71,7 @@ class MigrationRepository(SQLiteRepository):
             .joinpath("schema_v6_draft_conversion.sql")
             .read_text(encoding="utf-8")
         )
-        for statement in script.split(";"):
-            if statement.strip():
-                self._conn.execute(statement)
+        execute_migration_script(self._conn, script)
 
     def snapshot(self) -> dict[str, list[dict]]:
         """Read all legacy records from one consistent source transaction."""
@@ -127,6 +126,17 @@ class MigrationRepository(SQLiteRepository):
                 raise ValueError(
                     f"{table}: expected {expected}, found {actual}"
                 )
+        history_ctes = """WITH history_attempts AS (
+            SELECT id,session_id,question_id,attempted_at,is_correct,
+                   confidence,elapsed_ms,source_kind,note FROM attempts
+            UNION ALL
+            SELECT id,session_id,question_id,attempted_at,is_correct,
+                   confidence,elapsed_ms,source_kind,note FROM archived_attempts
+        ), history_options AS (
+            SELECT attempt_id,option_id,selected FROM attempt_options
+            UNION ALL
+            SELECT attempt_id,option_id,selected FROM archived_attempt_options
+        ) """
         checks = {
             "archived attempt identity reused": """
                 SELECT a.id FROM main.attempts a JOIN archived_attempts old ON old.id=a.id""",
@@ -136,12 +146,12 @@ class MigrationRepository(SQLiteRepository):
                        sa.session_id=sq.session_id AND sa.question_id=sq.question_id)
                       <> (SELECT COUNT(*) FROM answers ans WHERE ans.question_id=sq.question_id)""",
             "selected answer belongs to another question": """
-                SELECT ao.attempt_id FROM attempt_options ao
-                JOIN attempts a ON a.id=ao.attempt_id
+                SELECT ao.attempt_id FROM history_options ao
+                JOIN history_attempts a ON a.id=ao.attempt_id
                 JOIN answers ans ON ans.id=ao.option_id
                 WHERE ans.question_id<>a.question_id""",
             "attempt is outside its session/certification": """
-                SELECT a.id FROM attempts a JOIN sessions s ON s.id=a.session_id
+                SELECT a.id FROM history_attempts a JOIN sessions s ON s.id=a.session_id
                 JOIN questions q ON q.id=a.question_id WHERE
                 s.certification_id<>q.certification_id OR NOT EXISTS (
                     SELECT 1 FROM session_questions sq WHERE
@@ -169,23 +179,15 @@ class MigrationRepository(SQLiteRepository):
                 SELECT n.id FROM review_notes n JOIN questions q ON q.id=n.question_id
                 WHERE n.certification_id<>q.certification_id""",
             "stored attempt correctness mismatch": """
-                SELECT a.id FROM attempts a WHERE a.is_correct <> (
+                SELECT a.id FROM history_attempts a WHERE a.is_correct <> (
                     NOT EXISTS (
                         SELECT 1 FROM answers ans WHERE ans.question_id=a.question_id
                         AND ans.is_correct <> EXISTS (
-                            SELECT 1 FROM attempt_options ao WHERE ao.attempt_id=a.id
+                            SELECT 1 FROM history_options ao WHERE ao.attempt_id=a.id
                             AND ao.option_id=ans.id AND ao.selected=1)))""",
         }
         for label, sql in checks.items():
-            sql = """WITH history_attempts AS (
-                SELECT * FROM attempts UNION ALL SELECT * FROM archived_attempts
-            ), history_options AS (
-                SELECT * FROM attempt_options UNION ALL SELECT * FROM archived_attempt_options
-            ) """ + sql.replace(
-                "FROM attempts", "FROM history_attempts"
-            ).replace("JOIN attempts", "JOIN history_attempts").replace(
-                "FROM attempt_options", "FROM history_options"
-            )
+            sql = history_ctes + sql
             failures = [r[0] for r in self._conn.execute(sql)]
             if failures:
                 raise ValueError(

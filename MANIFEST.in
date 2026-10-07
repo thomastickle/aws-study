@@ -3,3 +3,5 @@ recursive-include tests/fixtures *.sql
 recursive-include examples *.json
 recursive-include scripts *.py
 include aws-study.py
+recursive-include docs *.md
+include AGENTS.md

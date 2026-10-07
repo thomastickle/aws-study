@@ -11,14 +11,15 @@ from .repository import SQLiteRepository
 class ReportRepository(SQLiteRepository):
     """Load report records without formatting text or writing files."""
 
-    def latest_interactive_session(self) -> int:
-        """Resolve the most recent quiz, excluding imported baselines."""
+    def latest_reportable_interactive_session(self) -> int:
+        """Resolve the newest interactive session eligible for reporting."""
         row = self._conn.execute(
             """SELECT id FROM sessions WHERE source_kind='interactive'
+                   AND (mode<>'exam' OR completed_at IS NOT NULL)
                ORDER BY id DESC LIMIT 1""",
         ).fetchone()
         if row is None:
-            raise ValueError("No interactive sessions found.")
+            raise ValueError("No reportable interactive sessions found.")
         return int(row["id"])
 
     def session(self, session_id: int) -> JsonRecord:
@@ -100,49 +101,6 @@ class ReportRepository(SQLiteRepository):
                 )
             )
         return tuple(records)
-
-    def question_context(
-        self, question_id: int, *, session_id: int | None = None
-    ) -> JsonRecord:
-        """Load exact question content and provenance for export."""
-        row = self._conn.execute(
-            """SELECT q.*,g.group_key selection_group FROM questions q
-               LEFT JOIN question_selection_groups g ON g.question_id=q.id
-               WHERE q.id=:question_id""",
-            {"question_id": question_id},
-        ).fetchone()
-        if row is None:
-            raise ValueError(f"Unknown question {question_id}")
-        question = dict(row)
-        if session_id is None:
-            answers = self._conn.execute(
-                """SELECT id,display_order,answer_text,is_correct,rationale
-                   FROM answers WHERE question_id=:question_id ORDER BY display_order""",
-                {"question_id": question_id},
-            )
-        else:
-            answers = self._conn.execute(
-                """SELECT a.id,sa.display_order,a.answer_text,a.is_correct,a.rationale
-                   FROM session_answers sa JOIN answers a ON a.id=sa.answer_id
-                   WHERE sa.session_id=:session_id AND sa.question_id=:question_id
-                   ORDER BY sa.display_order""",
-                {"question_id": question_id, "session_id": session_id},
-            )
-        question["answers"] = []
-        for row in answers:
-            answer = dict(row)
-            answer["label"] = chr(64 + answer["display_order"])
-            question["answers"].append(answer)
-        if session_id is not None and not question["answers"]:
-            raise ValueError("Question is not part of this session")
-        question["sources"] = self.provenance(question_id)
-        return question
-
-    def provenance(self, question_id: int) -> list[JsonRecord]:
-        """Include every occurrence and its source-specific explanations."""
-        return self.provenance_for_questions({question_id}).get(
-            question_id, []
-        )
 
     def provenance_for_questions(
         self, question_ids: set[int]

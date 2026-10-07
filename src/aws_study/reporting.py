@@ -7,12 +7,19 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-from .report_models import JsonRecord, ReportBundle, SessionData
+from .report_models import (
+    ContextExport,
+    ContextSession,
+    PreparedAttempt,
+    SessionData,
+)
 
 DEFAULT_REPORT_DIR = Path("private/reports")
 
 
-def _create_report_directory(session: JsonRecord, out_dir: str | Path) -> Path:
+def _create_report_directory(
+    session: ContextSession, out_dir: str | Path
+) -> Path:
     """Create a timestamped export folder beneath its certification code."""
     code = re.sub(r"[^A-Za-z0-9_-]+", "-", session["code"]).strip("-")
     code = code or "unknown"
@@ -36,7 +43,7 @@ def _without_letter(text: str) -> str:
     return text
 
 
-def _answer_boundary(a: JsonRecord) -> str:
+def _answer_boundary(a: PreparedAttempt) -> str:
     selected = [_without_letter(x) for x in (a.get("selected") or [])]
     correct = [_without_letter(x) for x in (a.get("correct") or [])]
     terms = []
@@ -48,7 +55,7 @@ def _answer_boundary(a: JsonRecord) -> str:
     return a.get("topic") or a.get("area") or "General AWS"
 
 
-def _sources_text(attempt: JsonRecord) -> str:
+def _sources_text(attempt: PreparedAttempt) -> str:
     return (
         "; ".join(
             source["name"]
@@ -59,7 +66,7 @@ def _sources_text(attempt: JsonRecord) -> str:
     )
 
 
-def _reinforcement_candidates(data: SessionData) -> list[JsonRecord]:
+def _reinforcement_candidates(data: SessionData) -> list[PreparedAttempt]:
     """Prioritize unsure correct answers, retaining session order in ties."""
     return [
         attempt
@@ -141,17 +148,16 @@ def continuation_prompt(
 
 
 def write_report_bundle(
-    bundle: ReportBundle,
+    data: SessionData,
     out_dir: str | Path = DEFAULT_REPORT_DIR,
 ) -> dict[str, Path]:
     """Render a prepared bundle; no database access is needed here."""
-    data = bundle.data
     s = data["session"]
     session_id = s["id"]
     attempts = data["attempts"]
     correct_n = sum(1 for a in attempts if a["is_correct"])
     total = len(attempts)
-    saved = len(bundle.questions)
+    saved = len(data["questions"])
     score = (100 * correct_n / total) if total else 0.0
     misses = [a for a in attempts if not a["is_correct"]]
     out = _create_report_directory(s, out_dir)
@@ -219,7 +225,7 @@ def write_report_bundle(
     report_path.write_text("\n".join(md), encoding="utf-8")
     prompt_path.write_text(prompt + "\n", encoding="utf-8")
 
-    context = {
+    context: ContextExport = {
         "schema_version": 3,
         "purpose": (
             "Complete session context pack; "
@@ -228,7 +234,7 @@ def write_report_bundle(
         ),
         "session": s,
         "continuation_prompt": prompt,
-        "questions": bundle.questions,
+        "questions": data["questions"],
     }
     context_path.write_text(json.dumps(context, indent=2), encoding="utf-8")
     return {

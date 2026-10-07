@@ -10,7 +10,8 @@ from study_fixture import BankTestCase, question
 
 from aws_study.cli import main
 from aws_study.db import connect
-from aws_study.quiz import _display_question, choose_saved_exam, run_exam
+from aws_study.exam_ui import choose_saved_exam, run_exam
+from aws_study.quiz_rendering import display_question
 from aws_study.quiz_repository import QuizRepository
 from aws_study.quiz_service import QuizService
 
@@ -104,7 +105,7 @@ class ExamUITests(BankTestCase):
             self.service.save_response(self.sid, q.id, {q.options[0].id})
         self.service.toggle_flag(self.sid, questions[0].id)
         with patch(
-            "aws_study.quiz._display_question", wraps=_display_question
+            "aws_study.exam_ui.display_question", wraps=display_question
         ) as display:
             text = self.run_inputs(["1", ":n", "B", "e", "3", ":p", ":r", "q"])
         self.assertEqual(
@@ -131,7 +132,7 @@ class ExamUITests(BankTestCase):
             redirect_stdout(StringIO()) as output,
             patch.object(output, "isatty", return_value=True),
         ):
-            _display_question(q, 1, 1, 80, selected=selected)
+            display_question(q, 1, 1, 80, selected=selected)
         text = output.getvalue()
         self.assertEqual(text.count("\033[1m"), 2)
         for o in q.options[:2]:
@@ -210,15 +211,16 @@ class ExamUITests(BankTestCase):
 
     def test_time_accumulates_only_inside_question_visits(self):
         with patch(
-            "aws_study.quiz.time.monotonic", side_effect=[0.0, 20.0, 30.0]
+            "aws_study.exam_ui.time.monotonic",
+            side_effect=[0.0, 20.0, 20.0, 30.0, 30.0],
         ):
             self.run_inputs(["A", "c", "q"])
         self.assertEqual(
             self.repo.responses(self.sid)[self.q.id].elapsed_ms, 30000
         )
         with patch(
-            "aws_study.quiz.time.monotonic",
-            side_effect=[1000.0, 1010.0, 1015.0],
+            "aws_study.exam_ui.time.monotonic",
+            side_effect=[1000.0, 1010.0, 1010.0, 1015.0, 1015.0],
         ):
             self.run_inputs(["r 1", "B", "e", "q"])
         self.assertEqual(
@@ -226,12 +228,34 @@ class ExamUITests(BankTestCase):
         )
         # Review has no active-question clock, including interrupted confirmation.
         with patch(
-            "aws_study.quiz.time.monotonic",
+            "aws_study.exam_ui.time.monotonic",
             side_effect=AssertionError("Review timed"),
         ):
             self.run_inputs(["s", KeyboardInterrupt()])
         self.assertEqual(
             self.repo.responses(self.sid)[self.q.id].elapsed_ms, 45000
+        )
+
+    def test_answer_timing_is_saved_atomically_and_excludes_persistence_delays(
+        self,
+    ):
+        with (
+            patch(
+                "aws_study.exam_ui.time.monotonic",
+                side_effect=[0.0, 20.0, 25.0, 30.0, 37.0],
+            ),
+            patch.object(
+                self.service, "save_response", wraps=self.service.save_response
+            ) as save,
+            patch.object(
+                self.service, "add_elapsed", wraps=self.service.add_elapsed
+            ) as add_time,
+        ):
+            self.run_inputs(["A", "c", "q"])
+        self.assertEqual(save.call_args.kwargs["elapsed_ms"], 20000)
+        self.assertEqual(add_time.call_count, 1)
+        self.assertEqual(
+            self.repo.responses(self.sid)[self.q.id].elapsed_ms, 25000
         )
 
     def test_saved_exam_menu_handles_resume_new_quit_and_bad_input(self):

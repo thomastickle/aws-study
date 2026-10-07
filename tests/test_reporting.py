@@ -2,7 +2,7 @@ import copy
 import json
 import tempfile
 import unittest
-from contextlib import chdir, redirect_stdout
+from contextlib import chdir, redirect_stderr, redirect_stdout
 from datetime import datetime
 from io import StringIO
 from pathlib import Path
@@ -99,7 +99,7 @@ class ReportingTests(unittest.TestCase):
     def test_named_folder_contains_complete_bundle(self):
         parent = self.root / "exports"
         paths = write_report_bundle(
-            self.reports.bundle(self.session_id), parent
+            self.reports.session_data(self.session_id), parent
         )
         folder = parent / "CLF-C02" / "20261006-143012"
         self.assertEqual({path.parent for path in paths.values()}, {folder})
@@ -127,11 +127,11 @@ class ReportingTests(unittest.TestCase):
     def test_same_second_exports_preserve_previous_files(self):
         parent = self.root / "exports"
         first = write_report_bundle(
-            self.reports.bundle(self.session_id), parent
+            self.reports.session_data(self.session_id), parent
         )
         first["report"].write_text("Previous report", encoding="utf-8")
         second = write_report_bundle(
-            self.reports.bundle(self.session_id), parent
+            self.reports.session_data(self.session_id), parent
         )
         self.assertNotEqual(first["report"].parent, second["report"].parent)
         self.assertEqual(second["report"].parent.name, "20261006-143012-2")
@@ -155,7 +155,7 @@ class ReportingTests(unittest.TestCase):
         )
         self.conn.commit()
         paths = write_report_bundle(
-            self.reports.bundle(self.session_id),
+            self.reports.session_data(self.session_id),
             self.root / "exports",
         )
         self.assertEqual(
@@ -174,7 +174,7 @@ class ReportingTests(unittest.TestCase):
         )
         self.conn.commit()
         paths = write_report_bundle(
-            self.reports.bundle(self.session_id),
+            self.reports.session_data(self.session_id),
             self.root / "exports",
         )
         self.assertEqual(paths["report"].parent.parent.name, "SAA-C03")
@@ -189,7 +189,7 @@ class ReportingTests(unittest.TestCase):
         self.conn.commit()
         parent = self.root / "exports"
         paths = write_report_bundle(
-            self.reports.bundle(self.session_id), parent
+            self.reports.session_data(self.session_id), parent
         )
         self.assertEqual(paths["report"].parent.parent.parent, parent)
         self.assertEqual(
@@ -240,7 +240,7 @@ class ReportingTests(unittest.TestCase):
             self.assertFalse(Path("private/report").exists())
 
     def test_prepared_bundle_renders_without_database_connection(self):
-        bundle = self.reports.bundle(self.session_id)
+        bundle = self.reports.session_data(self.session_id)
         self.conn.close()
         paths = write_report_bundle(bundle, self.root / "offline")
         report = paths["report"].read_text(encoding="utf-8")
@@ -264,13 +264,96 @@ class ReportingTests(unittest.TestCase):
             self.reports.resolve_session(str(self.session_id)), self.session_id
         )
         with self.assertRaisesRegex(ValueError, "Unknown session"):
-            self.reports.bundle(9999)
+            self.reports.session_data(9999)
         self.conn.execute(
             "DELETE FROM sessions WHERE source_kind='interactive'"
         )
         self.conn.commit()
-        with self.assertRaisesRegex(ValueError, "No interactive sessions"):
+        with self.assertRaisesRegex(
+            ValueError, "No reportable interactive sessions"
+        ):
             self.reports.resolve_session("latest")
+
+    def test_latest_skips_newer_draft_exams_for_report_and_prompt(self):
+        service = QuizService(QuizRepository(self.conn))
+        completed = service.create_session(
+            self.cert_id,
+            count=1,
+            target_year=2026,
+            mode="exam",
+            strategy="random",
+            seed=1,
+        )
+        q = service.questions(completed)[0]
+        service.save_response(
+            completed, q.id, {o.id for o in q.options if o.correct}
+        )
+        service.submit_session(completed)
+        draft = service.create_session(
+            self.cert_id,
+            count=1,
+            target_year=2026,
+            mode="exam",
+            strategy="random",
+            seed=1,
+        )
+        self.assertEqual(self.reports.resolve_session("latest"), completed)
+        with patch(
+            "aws_study.cli._db",
+            side_effect=lambda args: connect(self.root / "study.db"),
+        ):
+            with redirect_stdout(StringIO()) as output:
+                main(
+                    [
+                        "report",
+                        "latest",
+                        "--reports",
+                        str(self.root / "latest"),
+                    ]
+                )
+            context_path = next((self.root / "latest").rglob("*-context.json"))
+            self.assertEqual(
+                json.loads(context_path.read_text())["session"]["id"],
+                completed,
+            )
+            with redirect_stdout(StringIO()) as output:
+                main(["prompt", "latest"])
+            self.assertEqual(
+                output.getvalue(),
+                continuation_prompt(self.reports.session_data(completed))
+                + "\n",
+            )
+            for command in ("report", "prompt"):
+                with (
+                    redirect_stderr(StringIO()) as error,
+                    self.assertRaises(SystemExit) as status,
+                ):
+                    main([command, str(draft)])
+                self.assertEqual(status.exception.code, 2)
+                self.assertIn("not submitted", error.getvalue())
+            self.conn.execute("DELETE FROM sessions WHERE id<>?", (draft,))
+            self.conn.commit()
+            for command in ("report", "prompt"):
+                with (
+                    redirect_stderr(StringIO()) as error,
+                    self.assertRaises(SystemExit) as status,
+                ):
+                    main([command, "latest"])
+                self.assertEqual(status.exception.code, 2)
+                self.assertIn(
+                    "No reportable interactive sessions", error.getvalue()
+                )
+
+    def test_latest_keeps_empty_and_partial_study_sessions_reportable(self):
+        service, sid, questions = self._session(2)
+        self.assertEqual(self.reports.resolve_session("latest"), sid)
+        self.assertFalse(self.reports.session_data(sid)["attempts"])
+        q = questions[0]
+        service.record_answer(
+            sid, q.id, {o.id for o in q.options if o.correct}, "low", 0
+        )
+        self.assertEqual(self.reports.resolve_session("latest"), sid)
+        self.assertEqual(len(self.reports.session_data(sid)["attempts"]), 1)
 
     def _session(self, count, *, multi_select=False, seed=7):
         questions = []
@@ -311,7 +394,7 @@ class ReportingTests(unittest.TestCase):
         return service, session_id, service.questions(session_id)
 
     def _export(self, session_id):
-        bundle = self.reports.bundle(session_id)
+        bundle = self.reports.session_data(session_id)
         paths = write_report_bundle(bundle, self.root / "exports")
         context = json.loads(paths["context"].read_text(encoding="utf-8"))
         self._assert_context_reconstructs_session(session_id, context)
@@ -462,7 +545,7 @@ class ReportingTests(unittest.TestCase):
                     self.assertNotIn(record["topic"], prompt)
                 self.assertNotIn("## Reinforcement candidates", report)
                 self.assertIn(f"Score: {count}/{count} (100.0%)", report)
-                self.assertEqual(len(bundle.data["attempts"]), count)
+                self.assertEqual(len(bundle["attempts"]), count)
 
     def test_mixed_session_priorities_no_answer_leak_and_shared_prompt(self):
         service, session_id, questions = self._session(6)
@@ -491,7 +574,7 @@ class ReportingTests(unittest.TestCase):
             [q["id"] for q in context["questions"]], [q.id for q in questions]
         )
         self.assertEqual(
-            [a["question_id"] for a in bundle.data["attempts"]],
+            [a["question_id"] for a in bundle["attempts"]],
             [q.id for q in questions],
         )
         for index, record in enumerate(context["questions"]):
@@ -529,9 +612,7 @@ class ReportingTests(unittest.TestCase):
         for index in (1, 5):
             for answer in context["questions"][index]["answers"]:
                 self.assertIn(answer["answer_text"], report)
-        filtered = continuation_prompt(
-            bundle.data, include_low_confidence=False
-        )
+        filtered = continuation_prompt(bundle, include_low_confidence=False)
         self.assertNotIn(topics[2], filtered)
         self.assertIn(topics[0], filtered)
 
@@ -611,7 +692,7 @@ class ReportingTests(unittest.TestCase):
         self.assertEqual(sources[2]["answers"][0]["rationale"], "")
 
     def test_bundle_renders_and_resolves_answers_without_live_database(self):
-        bundle = self.reports.bundle(self.session_id)
+        bundle = self.reports.session_data(self.session_id)
         self.conn.close()
         paths = write_report_bundle(bundle, self.root / "offline")
         context = json.loads(paths["context"].read_text(encoding="utf-8"))
@@ -693,7 +774,7 @@ class ReportingTests(unittest.TestCase):
                     self.conn.commit()
                 bundle, context, report, prompt = self._export(session_id)
                 self.assertEqual(len(context["questions"]), 3)
-                self.assertEqual(len(bundle.data["attempts"]), answered)
+                self.assertEqual(len(bundle["attempts"]), answered)
                 self.assertIn(f"Answered: {answered}/3", report)
                 self.assertIn(f"Incomplete session: {answered}/3", prompt)
                 self.assertNotIn("MISSED", prompt)
@@ -724,10 +805,10 @@ class ReportingTests(unittest.TestCase):
         statements: list[str] = []
         self.conn.set_trace_callback(statements.append)
         try:
-            bundle = self.reports.bundle(session_id)
+            bundle = self.reports.session_data(session_id)
         finally:
             self.conn.set_trace_callback(None)
-        self.assertEqual(len(bundle.questions), 20)
+        self.assertEqual(len(bundle["questions"]), 20)
         self.assertLessEqual(len(statements), 6)
         self.assertEqual(self.conn.serialize(), before)
 
@@ -738,7 +819,7 @@ class ReportingTests(unittest.TestCase):
             {"session_id": session_id},
         )
         with self.assertRaisesRegex(ValueError, "has no saved answer order"):
-            self.reports.bundle(session_id)
+            self.reports.session_data(session_id)
 
     def test_session_with_no_saved_questions_exports_empty_context(self):
         self.conn.execute(

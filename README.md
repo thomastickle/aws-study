@@ -44,7 +44,9 @@ paths rather than scanning file contents for secrets.
 GitHub Actions runs on pushes, pull requests, and manual dispatch. It installs
 the package and runs the test suite and CLI checks on Python 3.12, 3.13, and 3.14
 across Linux, Windows, and macOS. Pip downloads and dependency wheels are cached
-between runs. A separate Linux/Python 3.12 quality job runs Ruff lint and format
+between runs, using `pyproject.toml` for pip dependency cache inputs. Pip does
+not install from `uv.lock`; that lock remains available for local uv development.
+A separate Linux/Python 3.12 quality job runs Ruff lint and format
 checks, mypy, branch coverage, optimized-Python tests, and the repository safety
 check. After tests and quality checks pass, it builds a wheel and source archive on
 Python 3.12, checks package metadata, and attaches both files to the workflow run
@@ -72,8 +74,7 @@ PYTHONPATH=src .venv/bin/python -O -m unittest discover -s tests -q
 .venv/bin/python scripts/check_repo_safety.py
 ```
 
-The initial branch-coverage gate is 90%, based on a measured 93% baseline before
-this cleanup. `jsonschema` validates the public example/schema in development;
+The branch-coverage gate is 90%. `jsonschema` validates the public example/schema in development;
 the application continues to validate imports using standard-library code.
 
 Packaging uses the same development extra:
@@ -117,55 +118,19 @@ schema-2 through schema-5 databases upgrade transactionally on opening. Schema 5
 introduced unique session/question attempts and nonnegative elapsed time; schema
 6 adds persisted exam drafts and archived legacy attempts.
 
-Older unfinished interactive exams become editable drafts. Their original
-attempts and selected-answer records are archived with IDs, timestamps, notes,
-confidence, correctness, and timing preserved. Those unfinished attempts stop
-contributing to adaptive history. Completed exams, study history, and imported
-baselines retain their existing attempts. Unknown historical durations remain
-null until new active-question time is measured. Incompatible records cause the
-upgrade to roll back. Legacy v1 databases require migration into a separate file.
-
 ### Migrating databases
 
-`migrate-db` accepts supported study databases v1–v6 and creates a validated copy
-using the current SQLite schema, v6. Legacy v1 content/history is converted;
-v2–v5 copies receive versioned upgrades in order. A v6 source produces a validated
-copy, preserving drafts, flags, and archives. The source stays intact and the
-destination must not exist. Preservation counts include active and archived
-attempt history; drafts are counted separately when copying v6. Question-bank
-JSON remains independently versioned at schema v2.
-
-For a legacy v1 database, create a separate destination (it must not already exist):
+`migrate-db` creates a validated copy and never replaces its source. The destination
+must not exist. Legacy v1 databases require this command; canonical v2–v5 databases
+also upgrade automatically when opened.
 
 ```bash
 python aws-study.py migrate-db \
   --source private/aws-study.db --dest private/aws-study-migrated.db
 ```
 
-Import the curated sources into that destination:
-
-```bash
-python aws-study.py --db private/aws-study-migrated.db import-json \
-  private/question-banks/aws/clf-c02/2026/aws-clf-c02-official-pretest-2026.json
-python aws-study.py --db private/aws-study-migrated.db import-json \
-  private/question-banks/aws/clf-c02/2026/aws-clf-c02-official-practice-question-set-2026.json
-python aws-study.py --db private/aws-study-migrated.db import-json \
-  private/question-banks/aws/clf-c02/2026/aws-clf-c02-official-practice-exam-2026.json
-python aws-study.py --db private/aws-study-migrated.db stats --cert CLF-C02
-python aws-study.py --db private/aws-study-migrated.db quiz --cert CLF-C02 -n 20 --year 2026
-```
-
-Use `--db private/aws-study-migrated.db` before the command while validating the
-migration. After validation, the migrated database can be promoted to the normal
-`private/aws-study.db` path so commands work without `--db`. Migration itself
-never replaces the source. Migration
-preserves history and checks grading, counts, and foreign keys before publishing
-the destination. Conflicts leave no destination file.
-
-V1 did not distinguish imported verification from manual updates. Migration
-preserves its effective verification as an explicit override. Use `source-verify`
-to change that state later. Old generated taxonomy is discarded; importing the
-curated files fills `area/topic` without altering attempts.
+See [database migrations](docs/database-migrations.md) for preservation rules,
+legacy verification, validation, and the data model.
 
 Check it:
 
@@ -214,8 +179,9 @@ Plain `F` remains answer choice F. Valid selections save before the confidence
 prompt, so Ctrl+C or EOF there keeps the answer. C/E/U and their full labels set
 confidence; Enter retains the current value, and `none` clears it. Revisiting
 preserves existing confidence unless explicitly changed. Active-question time
-accumulates across visits, including confidence entry; review and offline time
-are excluded.
+accumulates across visits, including confidence entry; persistence, review, and
+offline time are excluded. Answer changes and their elapsed intervals save in
+one transaction.
 
 The compact review index lists selections in original question order. A `*`
 marks flagged, unanswered, or incomplete questions, with a status label explaining
@@ -260,10 +226,8 @@ grading uses answer IDs. `--seed` reproduces both question selection and answer
 order when the bank/history are unchanged. An ordinary random shuffle may
 occasionally produce the original order.
 
-Older sessions keep their prior displayed order during database upgrades. Legacy
-v1 migration maps each original question's answer order into the saved session,
-including source variants with different orders. Canonical bank content and
-source-specific answer order remain separate from session presentation.
+Older sessions preserve their displayed order during upgrades; see
+[database migrations](docs/database-migrations.md#session-order-and-history).
 
 Quiz questions, choices, and feedback wrap at word boundaries within 80 columns
 by default. Narrower terminals reduce the width automatically, leaving two
@@ -297,28 +261,8 @@ Learning reports are generated after submission.
 2. `session-<id>-prompt.txt` — only the compact ChatGPT continuation prompt: misses first, then correct low- and medium-confidence answers. Its summaries contain topics, sources, and confidence, without selected or correct answers.
 3. `session-<id>-context.json` — a complete schema-v3 session record containing every saved question in quiz order, with the saved answer order/letters, full wording, answers, rationales, and all source occurrences. Each question includes `position`, `result` (correctness, confidence, elapsed milliseconds), `selected_answer_ids`, and `correct_answer_ids`. Questions include a boolean `flagged` field. Unanswered questions in historical/study reports have `result: null` and an empty selected-ID list.
 
-Full answer details appear once in each question's `answers` array. Selected and
-correct ID lists resolve against that array, in displayed order. Source answer
-references contain `answer_id` and `source_order`, preserving source ordering
-independently of displayed labels. A source reference inherits the displayed
-answer's rationale unless it contains a `rationale` override; explicit `null`
-or empty-string overrides preserve the source's absence of explanation.
-
-For example, if `answers` contains an answer with `id: 52`, then
-`"selected_answer_ids": [52]` identifies that choice, and a source reference
-`{"answer_id": 52, "source_order": 1}` identifies its original source position.
-No database lookup is needed. Source provenance retains verification origin and
-validity years alongside source identity, reference, type, and verification
-status/year. Redundant database linkage fields, fingerprints, and creation
-timestamps are omitted from exported question/source records. Question/answer
-IDs remain identifiers within the context pack; they need no external database.
-
-Context schema 3 replaces the previous full selected/correct objects with ID
-references. Existing version-2 exports remain untouched; new exports use only
-version 3. SQLite schema 6 and question-bank schema 2 are unchanged. Both the
-attached session context and local bank supply exact wording and answers; the
-compact prompt supplies learning-state metadata and keeps its instruction to
-avoid revealing prior answers before you respond.
+See [context format](docs/context-format.md) for the complete schema-3 fields,
+answer references, source rationale inheritance, and compatibility rules.
 
 Regenerating creates another export folder. If names collide within the same
 second, a numeric suffix is added to the timestamp folder. `--reports PATH`
@@ -343,6 +287,11 @@ Regenerate the latest report bundle:
 ```bash
 python aws-study.py report latest
 ```
+
+For `report latest` and `prompt latest`, latest means the newest reportable
+interactive session. Unsubmitted exams and imported baselines are skipped;
+partial or empty study sessions remain eligible. Explicit draft IDs still return
+the not-submitted error. A missing reportable session produces a useful error.
 
 Print only the continuation prompt:
 
@@ -486,45 +435,14 @@ No inferred classification or semantic duplicate/alternate metadata is imported.
 
 ## Code organization
 
-Command parsing and terminal output live in `cli.py` and `quiz.py`.
-Services coordinate quiz rules, source verification, and report assembly.
-`bank_schema.py` validates source files; `fingerprints.py` defines matching.
-`importers.py` coordinates canonical content and provenance imports.
-Validated certification and source metadata use frozen dataclasses.
-`selection.py` ranks and samples in-memory history without persistence access;
-ranking accepts an optional timezone-aware `now` for reproducible tests.
-`migrations.py` coordinates legacy conversion through migration repositories.
-SQL belongs in the feature repositories; `db.py` only opens connections and
-initializes the schema. All repository query parameters use named binds.
-
-Repositories share a caller-owned connection and return models or documented
-export records. Their write methods do not commit: the operation that combines
-those writes owns the transaction. An import saves the entire bank atomically,
-and source verification updates source metadata and provenance together. CLI commands
-close their connections on success and failure.
-
-`ReportService` prepares a `ReportBundle`; `reporting.py` renders its text and
-writes the files without accessing SQLite. Statistics and source lists likewise
-receive read models rather than formatting database rows in the CLI.
-
-Regression tests use synthetic data and exercise rollback, re-imported history,
-certification isolation, report exports, and the SQL boundary.
-
-## SQLite data model
-
-Major tables:
-
-- `certifications` — exam family/code/version
-- `sources` — provenance and source freshness
-- `questions` / `answers` — canonical content and curated area/topic
-- `question_sources` / `question_source_answers` — source occurrences and explanations
-- `sessions` / `session_questions` / `session_answers` — each quiz and its saved question/answer positions
-- `session_responses` / `session_response_answers` — editable exam selections, confidence, timing, and flags; retained after submission
-- `attempts` / `attempt_options` — finalized learning history (immediate in study mode)
-- `archived_attempts` / `archived_attempt_options` — preserved pre-upgrade unfinished exam attempts, excluded from learning statistics
-- `review_notes` — future human/AI annotations without mutating canonical question text
-
-A question does **not** have a mutable `weak=true` flag. Weakness/mastery is derived from raw attempts, so the weighting algorithm can change later without losing history.
+`src/aws_study/` separates CLI and terminal presentation from shared services and
+SQLite repositories. `quiz.py` handles study mode, `exam_ui.py` handles resumable
+exams, and `quiz_rendering.py` shares choice parsing and rendering. `ReportService`
+prepares typed `SessionData`; the renderer needs no live database connection.
+See [Repository Guidelines](AGENTS.md) for contributor rules and architecture
+constraints, and [database migrations](docs/database-migrations.md) for persistence
+details. Tests use synthetic data and preserve history, rollback, and selection
+invariants.
 
 ## Topic labels
 
@@ -546,12 +464,6 @@ That is 150 source records and 150 canonical questions under deterministic
 matching. Same-stem variants with different complete answer sets remain separate.
 
 The question JSON and SQLite DB are intentionally under `private/` and ignored by Git.
-
-## Tests
-
-```bash
-python -m unittest discover -s tests -v
-```
 
 ## Likely next increments
 

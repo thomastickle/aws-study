@@ -13,7 +13,7 @@ from test_schema_v5 import remove_v5_invariants
 
 from aws_study.cli import main
 from aws_study.db import (
-    MIGRATION_SCRIPTS,
+    MIGRATION_STEPS,
     SCHEMA_VERSION,
     init_db,
     open_readonly,
@@ -178,9 +178,10 @@ class DatabaseMigrationTests(BankTestCase):
 
     def test_migration_steps_cover_every_canonical_version(self):
         self.assertEqual(
-            set(MIGRATION_SCRIPTS), set(range(2, SCHEMA_VERSION + 1))
+            set(MIGRATION_STEPS), set(range(2, SCHEMA_VERSION + 1))
         )
-        for target, filename in MIGRATION_SCRIPTS.items():
+        for target, filenames in MIGRATION_STEPS.items():
+            filename = filenames[0]
             self.assertIn(
                 f"PRAGMA user_version = {target};",
                 files("aws_study").joinpath(filename).read_text(),

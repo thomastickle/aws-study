@@ -2,12 +2,15 @@
 
 import sqlite3
 from contextlib import closing
+from importlib.resources import files
+from unittest.mock import patch
 
 from study_fixture import BankTestCase, question, remove_draft_schema
 from test_migrations import legacy_fixture
 from test_schema_v5 import remove_v5_invariants
 
 from aws_study.db import (
+    MIGRATION_STEPS,
     SCHEMA_VERSION,
     connect,
     init_db,
@@ -92,6 +95,71 @@ class SchemaV6Tests(BankTestCase):
             conn.execute("DROP TABLE question_selection_groups")
         conn.execute(f"PRAGMA user_version={version}")
         conn.commit()
+
+    def test_future_schema_runs_after_v6_conversion_and_failure_rolls_back(
+        self,
+    ):
+        assets = self.root / "migration-assets"
+        assets.mkdir()
+        for name in MIGRATION_STEPS[6]:
+            (assets / name).write_text(
+                files("aws_study").joinpath(name).read_text()
+            )
+        future = assets / "schema_v7.sql"
+        script = """
+            CREATE TABLE future_check (converted INTEGER CHECK(converted=1));
+            INSERT INTO future_check SELECT COUNT(*) FROM archived_attempts
+                WHERE session_id=1;
+            PRAGMA user_version=7;
+        """
+        for fail in (True, False):
+            with (
+                self.subTest(fail=fail),
+                closing(sqlite3.connect(":memory:")) as conn,
+            ):
+                conn.row_factory = sqlite3.Row
+                self.conn.backup(conn)
+                self.downgrade(conn, 5)
+                before = self.rows(conn, "attempts")
+                future.write_text(
+                    script + ("SELECT * FROM missing;" if fail else "")
+                )
+                with (
+                    patch("aws_study.db.SCHEMA_VERSION", 7),
+                    patch.dict(
+                        "aws_study.db.MIGRATION_STEPS", {7: (future.name,)}
+                    ),
+                    patch("aws_study.db.files", return_value=assets),
+                ):
+                    if fail:
+                        with self.assertRaises(sqlite3.OperationalError):
+                            init_db(conn)
+                        self.assertEqual(schema_version(conn), 5)
+                        self.assertEqual(self.rows(conn, "attempts"), before)
+                        self.assertEqual(
+                            conn.execute(
+                                "SELECT name FROM sqlite_master WHERE name IN ('future_check','archived_attempts')"
+                            ).fetchall(),
+                            [],
+                        )
+                    else:
+                        init_db(conn)
+                        self.assertEqual(
+                            conn.execute("PRAGMA user_version").fetchone()[0],
+                            7,
+                        )
+                        self.assertEqual(
+                            conn.execute(
+                                "SELECT converted FROM future_check"
+                            ).fetchone()[0],
+                            1,
+                        )
+                        self.assertEqual(
+                            conn.execute(
+                                "SELECT COUNT(*) FROM attempts WHERE session_id=1"
+                            ).fetchone()[0],
+                            0,
+                        )
 
     def test_every_canonical_upgrade_archives_only_unfinished_interactive_exams(
         self,
