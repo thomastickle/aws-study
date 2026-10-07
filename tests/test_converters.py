@@ -229,13 +229,10 @@ class ConverterTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "freshness ledger"):
                 convert_corpus(root)
 
-    @unittest.skipUnless(shutil.which("git"), "Git checkout revision test")
-    def test_clean_checkout_sha_and_dirty_content_digest(self):
-        root = self.root / "checkout"
-        directory = root / "src/data/clf-c02"
-        write_corpus(directory)
+    def commit_checkout(self, root):
         for args in (
             ("init", "-q"),
+            ("config", "core.autocrlf", "true"),
             ("add", "."),
             (
                 "-c",
@@ -254,12 +251,60 @@ class ConverterTests(unittest.TestCase):
                 check=True,
                 capture_output=True,
             )
-        sha = subprocess.run(
+        return subprocess.run(
             ["git", "-C", str(root), "rev-parse", "HEAD"],
             check=True,
             capture_output=True,
             text=True,
         ).stdout.strip()
+
+    @unittest.skipUnless(shutil.which("git"), "Git checkout revision test")
+    def test_checkout_line_endings_keep_revision_and_snapshot_identity(self):
+        root = self.root / "checkout"
+        directory = root / "src/data/clf-c02"
+        write_corpus(directory)
+        for path in directory.iterdir():
+            path.write_bytes(path.read_bytes().replace(b"\r\n", b"\n"))
+        notice = root / "LICENSE"
+        notice.write_bytes(b"Synthetic upstream notice\n")
+        ledger = root / "src/data/bank-lastmod.json"
+        ledger.write_bytes(
+            json.dumps(
+                {
+                    "certs": {
+                        "clf-c02": {
+                            "contentHash": "a" * 64,
+                            "lastmod": "2026-07-05",
+                        }
+                    }
+                },
+                indent=2,
+            ).encode()
+            + b"\n"
+        )
+        sha = self.commit_checkout(root)
+        before = convert_corpus(root).bank
+        loose_before = convert_corpus(directory).bank
+        for path in [*directory.iterdir(), notice, ledger]:
+            path.write_bytes(path.read_bytes().replace(b"\n", b"\r\n"))
+        subprocess.run(
+            ["git", "-C", str(root), "diff", "--exit-code", "HEAD"],
+            check=True,
+            capture_output=True,
+        )
+        after = convert_corpus(root).bank
+        self.assertEqual(after.source.key, f"{FAMILY}@{sha}")
+        self.assertEqual(bank_json(before), bank_json(after))
+        self.assertEqual(
+            bank_json(loose_before), bank_json(convert_corpus(directory).bank)
+        )
+
+    @unittest.skipUnless(shutil.which("git"), "Git checkout revision test")
+    def test_clean_checkout_sha_and_dirty_content_digest(self):
+        root = self.root / "checkout"
+        directory = root / "src/data/clf-c02"
+        write_corpus(directory)
+        sha = self.commit_checkout(root)
         clean = convert_corpus(root).bank
         self.assertEqual(clean.source.key, f"{FAMILY}@{sha}")
         self.assertEqual(

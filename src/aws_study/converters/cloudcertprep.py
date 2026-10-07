@@ -285,7 +285,13 @@ def _read_corpus(
         path = directory / f"domain{domain}.json"
         try:
             raw = path.read_bytes()
-            digest.update(path.name.encode() + b"\0" + raw + b"\0")
+            # Git can check out the same JSON with LF or CRLF on different OSes.
+            digest.update(
+                path.name.encode()
+                + b"\0"
+                + raw.replace(b"\r\n", b"\n")
+                + b"\0"
+            )
             data = json.loads(raw, object_pairs_hook=_unique_object)
             if not isinstance(data, list) or not data:
                 raise ValueError(
@@ -350,18 +356,11 @@ def _git_revision(
             return None, False
         revision = git("rev-parse", "HEAD")
         for path in relevant:
-            committed = subprocess.run(
-                [
-                    "git",
-                    "-C",
-                    str(root),
-                    "show",
-                    f"HEAD:{path.relative_to(root).as_posix()}",
-                ],
-                check=True,
-                capture_output=True,
-            ).stdout
-            if committed != path.read_bytes():
+            relative = path.relative_to(root).as_posix()
+            committed = git("rev-parse", f"HEAD:{relative}")
+            # Apply Git's clean filters, including attributes and core.autocrlf.
+            current = git("hash-object", f"--path={relative}", str(path))
+            if committed != current:
                 return revision, False
         return revision, True
     except (OSError, subprocess.CalledProcessError):

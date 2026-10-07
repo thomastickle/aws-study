@@ -29,8 +29,10 @@ without writing a bank, including invalid records.
 
 Clean checkouts use the Git SHA in snapshot identity. Copies and modified
 checkouts use a deterministic snapshot digest; unrelated ancestor Git checkouts
-are never used as upstream identity. Repository/certification, available revision,
-content digests, update metadata, and license notice remain inspectable in JSON.
+are never used as upstream identity. Git's line-ending normalization is respected,
+and LF/CRLF differences do not change corpus digests. Repository/certification,
+available revision, content digests, update metadata, and license notice remain
+inspectable in JSON.
 No conversion timestamp is added, so repeating a conversion is reproducible.
 
 ## Trust and verification
