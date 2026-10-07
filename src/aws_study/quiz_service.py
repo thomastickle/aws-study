@@ -175,6 +175,19 @@ class QuizService:
             for number, question in enumerate(questions, 1)
         )
 
+    def review_item(
+        self, session_id: int, question_id: int
+    ) -> SessionReviewItem:
+        """Read one question's durable draft state and saved display ordinal."""
+        self._repository.is_complete(session_id)
+        question = self._repository.question(session_id, question_id)
+        responses = self._repository.responses(session_id, question_id)
+        return SessionReviewItem(
+            self._repository.question_number(session_id, question_id),
+            question,
+            responses.get(question_id, DraftResponse(question_id)),
+        )
+
     def resume_session(self, session_id: int) -> tuple[SessionReviewItem, ...]:
         """Validate resumability without selecting or shuffling new questions."""
         with self._repository.transaction():

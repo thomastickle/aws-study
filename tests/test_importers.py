@@ -43,7 +43,7 @@ class ImportTests(BankTestCase):
         result = self.import_questions([second], source="other")
         self.assertEqual(result.new_canonical_questions, 0)
         self.assertEqual(result.new_provenance_links, 1)
-        sources = ReportRepository(self.conn).question_context(1)["sources"]
+        sources = ReportRepository(self.conn).provenance_for_questions({1})[1]
         self.assertEqual(len(sources), 2)
         self.assertEqual(sources[1]["answers"][0]["answer_text"], "Amazon S3")
         self.assertEqual(

@@ -9,12 +9,12 @@ from pathlib import Path
 
 DEFAULT_DB = Path("private/aws-study.db")
 SCHEMA_VERSION = 6
-MIGRATION_SCRIPTS = {
-    2: "schema.sql",
-    3: "schema_v3.sql",
-    4: "schema_v4.sql",
-    5: "schema_v5.sql",
-    6: "schema_v6.sql",
+MIGRATION_STEPS = {
+    2: ("schema.sql",),
+    3: ("schema_v3.sql",),
+    4: ("schema_v4.sql",),
+    5: ("schema_v5.sql",),
+    6: ("schema_v6.sql", "schema_v6_draft_conversion.sql"),
 }
 
 
@@ -264,17 +264,14 @@ def init_db(conn: sqlite3.Connection) -> None:
         raise ValueError("Legacy database: run migrate-db into a new file")
     # Canonical schema starts at v2; legacy v1 requires content/history mapping.
     scripts = [
-        MIGRATION_SCRIPTS[target]
+        script
         for target in range(max(2, version + 1), SCHEMA_VERSION + 1)
+        for script in MIGRATION_STEPS[target]
     ]
     schema = "\n".join(
         files("aws_study").joinpath(name).read_text(encoding="utf-8")
         for name in scripts
     )
-    if version < 6:
-        schema += "\n" + files("aws_study").joinpath(
-            "schema_v6_draft_conversion.sql"
-        ).read_text(encoding="utf-8")
     # SQLite cannot enable foreign keys once a transaction has started.
     conn.execute("PRAGMA foreign_keys = ON")
     try:
@@ -282,3 +279,21 @@ def init_db(conn: sqlite3.Connection) -> None:
     except BaseException:
         conn.rollback()
         raise
+
+
+def execute_migration_script(conn: sqlite3.Connection, script: str) -> None:
+    """Execute authored SQL without committing the caller's transaction.
+
+    SQLite determines statement boundaries, including quoted semicolons and
+    trigger bodies. This intentionally avoids executescript's implicit commit.
+    """
+    statement = ""
+    for character in script:
+        statement += character
+        if character == ";" and sqlite3.complete_statement(statement):
+            conn.execute(statement)
+            statement = ""
+    if statement.strip():
+        # SQLite accepts trailing comments and a final unterminated statement;
+        # malformed SQL still raises within the caller's transaction.
+        conn.execute(statement)

@@ -16,8 +16,9 @@ from study_fixture import (
 
 from aws_study.db import connect, init_db
 from aws_study.importers import import_internal_bank
-from aws_study.quiz import _parse_answer, _prompt_confidence, run_quiz
+from aws_study.quiz import _prompt_confidence, run_quiz
 from aws_study.quiz_models import AttemptHistory, QuestionHistory
+from aws_study.quiz_rendering import parse_answer
 from aws_study.quiz_repository import QuizRepository
 from aws_study.quiz_service import QuizService
 from aws_study.selection import rank_candidates
@@ -459,8 +460,8 @@ class QuizTests(unittest.TestCase):
         self.assertFalse(self.conn.in_transaction)
 
     def test_answer_and_confidence_shortcuts_are_preserved(self):
-        self.assertEqual(_parse_answer("F ;, a a", list("ABCDEF")), {0, 5})
-        self.assertEqual(_parse_answer("1, 6", list("ABCDEF")), {0, 5})
+        self.assertEqual(parse_answer("F ;, a a", list("ABCDEF")), {0, 5})
+        self.assertEqual(parse_answer("1, 6", list("ABCDEF")), {0, 5})
         for raw, expected in (
             ("C", "high"),
             ("Educated Guess", "medium"),

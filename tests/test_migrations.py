@@ -164,7 +164,7 @@ class MigrationTests(unittest.TestCase):
         interactive = ReportService(ReportRepository(conn)).session_data(1)
         self.assertEqual(interactive["attempts"][0]["selected"], ["A. Wrong"])
         self.assertEqual(interactive["attempts"][0]["correct"], ["B. Right"])
-        sources = ReportRepository(conn).question_context(1)["sources"]
+        sources = ReportRepository(conn).provenance_for_questions({1})[1]
         self.assertEqual(len(sources), 2)
         self.assertEqual(sources[1]["answers"][0]["answer_text"], "Right")
         self.assertEqual(

@@ -128,14 +128,14 @@ class AnswerOrderTests(BankTestCase):
             )
         self.service.finish_session(sid)
         service = ReportService(ReportRepository(self.conn))
-        bundle = service.bundle(sid)
+        bundle = service.session_data(sid)
         by_id = {q.id: q for q in questions}
-        for attempt in bundle.data["attempts"]:
+        for attempt in bundle["attempts"]:
             q = by_id[attempt["question_id"]]
             expected = [f"{o.label}. {o.text}" for o in q.options if o.correct]
             self.assertEqual(attempt["correct"], expected)
             self.assertEqual(attempt["selected"], expected)
-        for record in bundle.questions:
+        for record in bundle["questions"]:
             q = by_id[record["id"]]
             self.assertEqual(
                 [a["id"] for a in record["answers"]], [o.id for o in q.options]

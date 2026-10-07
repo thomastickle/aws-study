@@ -294,7 +294,12 @@ class QuizRepository(SQLiteRepository):
         confidence: str | None,
         elapsed_ms: int | None,
     ) -> None:
-        """Insert an attempt and its choices in the caller's transaction."""
+        """Insert an attempt and its choices in the caller's transaction.
+
+        Services acquire SQLite's write lock before checking session state.
+        Allocate inside the INSERT under that lock so concurrent writers cannot
+        choose the same ID, and archived identities cannot be reused.
+        """
         cursor = self._conn.execute(
             """INSERT INTO attempts(
                    id, session_id, question_id, attempted_at, is_correct,
@@ -383,13 +388,31 @@ class QuizRepository(SQLiteRepository):
             )
         )
 
-    def responses(self, session_id: int) -> dict[int, DraftResponse]:
+    def question_number(self, session_id: int, question_id: int) -> int:
+        """Return the display ordinal even when stored positions have gaps."""
+        row = self._conn.execute(
+            """SELECT COUNT(*) FROM session_questions prior
+               JOIN session_questions target ON target.session_id=prior.session_id
+               WHERE target.session_id=:session_id AND target.question_id=:question_id
+                   AND prior.position<=target.position""",
+            {"session_id": session_id, "question_id": question_id},
+        ).fetchone()
+        if not row[0]:
+            raise ValueError("Question is not part of this session.")
+        return int(row[0])
+
+    def responses(
+        self, session_id: int, question_id: int | None = None
+    ) -> dict[int, DraftResponse]:
         """Batch-load draft metadata and selections without grading them."""
         params = {"session_id": session_id}
+        where = "session_id=:session_id"
+        if question_id is not None:
+            params["question_id"] = question_id
+            where += " AND question_id=:question_id"
         selected: dict[int, set[int]] = {}
         for row in self._conn.execute(
-            """SELECT question_id,answer_id FROM session_response_answers
-               WHERE session_id=:session_id""",
+            f"SELECT question_id,answer_id FROM session_response_answers WHERE {where}",
             params,
         ):
             selected.setdefault(row["question_id"], set()).add(
@@ -406,7 +429,7 @@ class QuizRepository(SQLiteRepository):
                 row["updated_at"],
             )
             for row in self._conn.execute(
-                "SELECT * FROM session_responses WHERE session_id=:session_id",
+                f"SELECT * FROM session_responses WHERE {where}",
                 params,
             )
         }

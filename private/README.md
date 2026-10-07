@@ -41,14 +41,9 @@ questions remain present with `result: null` and empty `selected_answer_ids`.
 New exports use context schema 3; existing reports are not rewritten. Database
 schema 6 and question-bank schema 2 are unchanged.
 
-Each question's `answers` holds full answer details once. `selected_answer_ids`
-and `correct_answer_ids` resolve locally against those answers in displayed
-order. Each source retains independent `answer_id`/`source_order` references.
-A source rationale inherits the displayed rationale when absent; a differing
-`rationale` override, including explicit `null` or empty text, preserves the
-source explanation exactly. Provenance retains verification origin and validity
-years; redundant database linkage fields, fingerprints, and creation timestamps
-are omitted from question/source records. The pack remains self-contained.
+See the [context format](../docs/context-format.md) for answer references,
+source-specific rationale inheritance/overrides, and provenance fields. Exports
+remain self-contained and need no database lookup.
 
 The compact prompt prioritizes misses, then correct low- and medium-confidence
 answers, without including selected or correct answer text. The Markdown report
@@ -59,12 +54,8 @@ candidates only when needed. Incomplete study/baseline reports show answered
 versus saved counts and score only answered questions. No older-history analysis
 is added.
 
-Schema 6 persists exam drafts, selections, confidence, flags, and active-question
-time. Unfinished interactive exam attempts from older databases move into an
-archive with their original metadata intact, and their selections become
-editable drafts. Completed sessions, study attempts, and imported baseline
-history remain unchanged. Active and archived rows both count toward migration
-preservation checks; only active finalized attempts drive adaptive learning.
+See [database migrations](../docs/database-migrations.md) for schema-6 draft
+conversion, archived history preservation, upgrade ordering, and validation.
 
 Starting an exam offers saved drafts for the same certification. Use
 `python aws-study.py quiz --resume <id>` to resume directly. A valid selection
@@ -74,9 +65,14 @@ explicit confirmation before creating attempts. Its compact index marks flagged
 or incomplete questions with `*`. Choose a number to see the full question;
 selected options are bold and marked `>`. Use `:n` to skip, `:p` for the previous
 question, and `:r` to return to the index. Finishing an edit returns to the index.
-Drafts and flags remain after
-submission. No new runtime packages are needed.
+Drafts and flags remain after submission. No new runtime packages are needed.
 
 Unfinished interactive exams cannot generate learning reports or prompts;
 complete them through resume first. Quitting produces no report bundle and does
 not change adaptive history. Existing export files remain untouched.
+
+`report latest` and `prompt latest` skip unfinished interactive exams and imported
+baselines, choosing the newest reportable interactive session. Partial or empty
+study sessions remain eligible; explicit exam draft IDs still require submission.
+Active question time includes confidence entry but excludes persistence, review,
+and offline time. Answer selection and its elapsed interval save atomically.

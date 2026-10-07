@@ -2,6 +2,7 @@
 
 import sqlite3
 from contextlib import closing
+from unittest.mock import patch
 
 from study_fixture import BankTestCase, question
 
@@ -50,6 +51,142 @@ class ExamWorkflowTests(BankTestCase):
         for q in self.questions:
             self.service.save_response(self.sid, q.id, self.answer(q), 100)
             self.service.set_confidence(self.sid, q.id, "medium")
+
+    def test_single_review_item_is_fresh_and_matches_full_review_with_position_gaps(
+        self,
+    ):
+        q = self.questions[0]
+        self.conn.execute(
+            "UPDATE session_questions SET position=position*10 WHERE session_id=?",
+            (self.sid,),
+        )
+        self.conn.commit()
+        self.service.toggle_flag(self.sid, q.id)
+        expected = self.service.review_items(self.sid)[0]
+        statements: list[str] = []
+        self.conn.set_trace_callback(statements.append)
+        try:
+            with patch.object(
+                self.repo,
+                "questions",
+                side_effect=AssertionError("Full exam loaded"),
+            ):
+                self.assertEqual(
+                    self.service.review_item(self.sid, q.id), expected
+                )
+        finally:
+            self.conn.set_trace_callback(None)
+        draft_reads = [
+            sql
+            for sql in statements
+            if "FROM session_responses WHERE" in sql
+            or "FROM session_response_answers WHERE" in sql
+        ]
+        self.assertEqual(len(draft_reads), 2)
+        self.assertTrue(
+            all(f"question_id={q.id}" in sql for sql in draft_reads)
+        )
+        self.service.save_response(
+            self.sid, q.id, self.answer(q), elapsed_ms=123
+        )
+        self.service.set_confidence(self.sid, q.id, "low")
+        item = self.service.review_item(self.sid, q.id)
+        self.assertEqual(item, self.service.review_items(self.sid)[0])
+        self.assertEqual(item.response.confidence, "low")
+        self.assertEqual(item.response.elapsed_ms, 123)
+        self.assertEqual(item.status, "ANSWERED")
+        with self.assertRaisesRegex(ValueError, "Unknown session"):
+            self.service.review_item(999, q.id)
+        with self.assertRaisesRegex(ValueError, "not part"):
+            self.service.review_item(self.sid, 999)
+
+    def test_answer_and_elapsed_update_roll_back_together(self):
+        q = next(q for q in self.questions if q.select_count == 1)
+        self.service.save_response(
+            self.sid, q.id, self.answer(q), elapsed_ms=10
+        )
+        self.conn.execute("""CREATE TRIGGER reject_draft_elapsed
+            BEFORE UPDATE OF elapsed_ms ON session_responses
+            WHEN NEW.elapsed_ms>10 BEGIN SELECT RAISE(ABORT,'Synthetic timing failure'); END""")
+        self.conn.commit()
+        before = self.repo.responses(self.sid)[q.id]
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.service.save_response(
+                self.sid,
+                q.id,
+                {o.id for o in q.options if not o.correct},
+                elapsed_ms=1,
+            )
+        self.assertEqual(self.repo.responses(self.sid)[q.id], before)
+
+    def test_attempt_ids_and_writes_are_serialized_across_connections(self):
+        self.fill()
+        self.service.submit_session(self.sid)
+        highest = self.conn.execute("SELECT MAX(id) FROM attempts").fetchone()[
+            0
+        ]
+        with self.repo.transaction():
+            self.conn.execute(
+                "INSERT INTO archived_attempts SELECT * FROM attempts WHERE id=?",
+                (highest,),
+            )
+            self.conn.execute(
+                "INSERT INTO archived_attempt_options SELECT * FROM attempt_options WHERE attempt_id=?",
+                (highest,),
+            )
+            self.conn.execute(
+                "DELETE FROM attempt_options WHERE attempt_id=?", (highest,)
+            )
+            self.conn.execute("DELETE FROM attempts WHERE id=?", (highest,))
+        sessions = [
+            self.service.create_session(
+                1,
+                count=1,
+                target_year=2026,
+                mode="study",
+                strategy="random",
+                seed=1,
+            )
+            for _ in range(2)
+        ]
+        q = self.service.questions(sessions[0])[0]
+        with closing(connect(self.root / "study.db")) as other:
+            other.execute("PRAGMA busy_timeout=0")
+            other_service = QuizService(QuizRepository(other))
+            with self.repo.transaction():
+                self.repo.lock_session(sessions[0])
+                self.repo.insert_attempt(
+                    sessions[0],
+                    q.id,
+                    self.answer(q),
+                    attempted_at="2026-10-07",
+                    is_correct=True,
+                    confidence="high",
+                    elapsed_ms=0,
+                )
+                with self.assertRaisesRegex(
+                    sqlite3.OperationalError, "locked"
+                ):
+                    other_service.record_answer(
+                        sessions[1], q.id, self.answer(q), "high", 0
+                    )
+            other_service.record_answer(
+                sessions[1], q.id, self.answer(q), "high", 0
+            )
+        ids = [
+            r[0]
+            for r in self.conn.execute(
+                "SELECT id FROM attempts WHERE session_id IN (?,?) ORDER BY id",
+                sessions,
+            )
+        ]
+        self.assertEqual(ids, [highest + 1, highest + 2])
+        self.assertEqual(
+            self.conn.execute("SELECT id FROM archived_attempts").fetchone()[
+                0
+            ],
+            highest,
+        )
 
     def test_drafts_edit_flags_confidence_and_time_do_not_change_learning(
         self,
@@ -111,12 +248,14 @@ class ExamWorkflowTests(BankTestCase):
         snapshot = self.conn.serialize()
         self.assertEqual(self.service.submit_session(self.sid), results)
         self.assertEqual(self.conn.serialize(), snapshot)
-        context = ReportService(ReportRepository(self.conn)).bundle(self.sid)
+        context = ReportService(ReportRepository(self.conn)).session_data(
+            self.sid
+        )
         self.assertEqual(
-            [q["flagged"] for q in context.questions], [False, True, True]
+            [q["flagged"] for q in context["questions"]], [False, True, True]
         )
         self.assertTrue(
-            all(isinstance(q["flagged"], bool) for q in context.questions)
+            all(isinstance(q["flagged"], bool) for q in context["questions"])
         )
 
     def test_invalid_selections_and_metadata_are_rejected_without_draft_writes(
@@ -230,9 +369,8 @@ class ExamWorkflowTests(BankTestCase):
 
     def test_reports_and_prompt_are_blocked_for_unsubmitted_exams(self):
         reports = ReportService(ReportRepository(self.conn))
-        for call in (reports.bundle, reports.session_data):
-            with self.assertRaisesRegex(ValueError, "not submitted"):
-                call(self.sid)
+        with self.assertRaisesRegex(ValueError, "not submitted"):
+            reports.session_data(self.sid)
 
     def test_incomplete_legacy_selection_is_visible_and_must_be_repaired(self):
         q = next(q for q in self.questions if q.select_count == 2)
