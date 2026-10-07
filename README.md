@@ -112,22 +112,28 @@ Linux/macOS:
 There are **no runtime package downloads**. The top-level `aws-study.py` launcher loads the code directly from `src/`. The `pyproject.toml` remains available if you later want to package/install it conventionally.
 
 Local study data lives under `private/` and is ignored by Git. New databases
-use database schema 5 (with schema-v2 question-bank inputs). Existing schema-2,
-schema-3, and schema-4 databases upgrade transactionally on opening; history
-stays intact. Schema 5 enforces one attempt per session/question and nonnegative
-elapsed time, allowing null for unknown historical durations. Incompatible
-historical attempts cause the upgrade to fail without deleting or changing
-history. Existing v1 databases require a separate migration; the program
-will give an instruction rather than changing them in place.
+use database schema 6 (with schema-v2 question-bank inputs). Existing canonical
+schema-2 through schema-5 databases upgrade transactionally on opening. Schema 5
+introduced unique session/question attempts and nonnegative elapsed time; schema
+6 adds persisted exam drafts and archived legacy attempts.
+
+Older unfinished interactive exams become editable drafts. Their original
+attempts and selected-answer records are archived with IDs, timestamps, notes,
+confidence, correctness, and timing preserved. Those unfinished attempts stop
+contributing to adaptive history. Completed exams, study history, and imported
+baselines retain their existing attempts. Unknown historical durations remain
+null until new active-question time is measured. Incompatible records cause the
+upgrade to roll back. Legacy v1 databases require migration into a separate file.
 
 ### Migrating databases
 
-`migrate-db` accepts any supported study database (v1–v5) and creates a validated
-copy using the current SQLite schema (v5). Legacy v1 content/history is converted;
-v2–v4 copies receive the versioned SQL upgrades in order. A v5 source produces a
-validated copy. The source stays intact and the destination must not already
-exist. The JSON summary reports source/target schema versions and preserved
-history counts. Question-bank JSON uses its independent schema version, v2.
+`migrate-db` accepts supported study databases v1–v6 and creates a validated copy
+using the current SQLite schema, v6. Legacy v1 content/history is converted;
+v2–v5 copies receive versioned upgrades in order. A v6 source produces a validated
+copy, preserving drafts, flags, and archives. The source stays intact and the
+destination must not exist. Preservation counts include active and archived
+attempt history; drafts are counted separately when copying v6. Question-bank
+JSON remains independently versioned at schema v2.
 
 For a legacy v1 database, create a separate destination (it must not already exist):
 
@@ -187,7 +193,65 @@ python aws-study.py quiz --cert CLF-C02 -n 15 --year 2026 --strategy new
 python aws-study.py quiz --cert CLF-C02 -n 20 --year 2026 --mode study
 ```
 
-`exam` mode waits until the end to show misses. `study` mode reveals the correct answer and stored rationale after each response.
+`exam` mode saves editable drafts and shows no correctness feedback until final
+submission. `study` mode reveals correctness and stored rationales immediately,
+recording each answer as an attempt. Both modes require exactly the question's
+stored selection count; duplicate input tokens count once.
+
+### Exam navigation and final review
+
+At a question, enter choices normally, or use these case-insensitive commands:
+
+| Command | Action |
+| --- | --- |
+| `:f` / `:flag` | Toggle the review flag without answering |
+| `:n` / `:next` | Move forward; unanswered questions may be skipped |
+| `:p` / `:previous` | Move backward |
+| `:r` / `:review` | Open the review list |
+| `:q` / `:quit` | Save drafts and quit |
+
+Plain `F` remains answer choice F. Valid selections save before the confidence
+prompt, so Ctrl+C or EOF there keeps the answer. C/E/U and their full labels set
+confidence; Enter retains the current value, and `none` clears it. Revisiting
+preserves existing confidence unless explicitly changed. Active-question time
+accumulates across visits, including confidence entry; review and offline time
+are excluded.
+
+The compact review index lists selections in original question order. A `*`
+marks flagged, unanswered, or incomplete questions, with a status label explaining
+why. Enter a question number (or `R <n>`) to view its full question and options;
+saved selections are bold in an interactive terminal and marked `>` in all output.
+Use `:n` to skip to the next question, `:p` for the previous question, or `:r`
+to return to the index. Finishing an edit also returns to the index. From the
+index, `F <n>` toggles a flag, `S` submits, and `Q` quits. Submission requires
+valid answers for every question and an explicit yes at `Submit exam? [y/N]`.
+It atomically creates final attempts and marks completion; drafts and flags
+remain available as historical state. Repeated submission never duplicates
+attempts. Flags express a desire to review and do not automatically imply weakness.
+
+### Saved exams and resume
+
+Starting an exam offers unfinished drafts for the requested certification, with
+session IDs, answered/total counts, and flag counts. Choose a session ID to
+resume, `N` to start another exam while retaining drafts, or `Q` to quit.
+
+Resume directly without selecting or reshuffling questions:
+
+```bash
+python aws-study.py quiz --resume 12
+```
+
+Selection options such as `--cert`, `--count`, `--mode`, and `--seed` cannot be
+combined with `--resume`; display width and report destination may be changed.
+Resume begins at the first unanswered or invalid question, or opens review if
+all answers are valid. Quitting, Ctrl+C, and EOF preserve saved drafts without
+scoring or exporting reports. Unsaved input and time since the last checkpoint
+cannot survive an abrupt process kill.
+
+Only submitted exam attempts affect adaptive history. `report` and `prompt`
+refuse unfinished interactive exams to avoid exposing correct answers; use
+`quiz --resume <id>` first. Completed and imported baseline reports remain
+available.
 
 Answer choices are shuffled when each session is created, in both modes. Letters
 A/B/C/etc. reflect that session's presentation. The saved order stays stable when
@@ -227,9 +291,11 @@ private/reports/CLF-C02/20261006-143012/
   session-5-context.json
 ```
 
+Learning reports are generated after submission.
+
 1. `session-<id>-report.md` — score plus the **curated area/topic for each missed question**, selected answer, correct answer, confidence, an optional section for correct low- or medium-confidence answers, and a compact continuation prompt.
 2. `session-<id>-prompt.txt` — only the compact ChatGPT continuation prompt: misses first, then correct low- and medium-confidence answers. Its summaries contain topics, sources, and confidence, without selected or correct answers.
-3. `session-<id>-context.json` — a complete schema-v2 session record containing every saved question in quiz order, with the saved answer order/letters, full wording, answers, rationales, and all source occurrences. Each question includes `position`, `result` (correctness, confidence, elapsed milliseconds), `selected_answers`, and `correct_answers`. Unanswered questions have `result: null` and an empty selected-answer list.
+3. `session-<id>-context.json` — a complete schema-v2 session record containing every saved question in quiz order, with the saved answer order/letters, full wording, answers, rationales, and all source occurrences. Each question includes `position`, `result` (correctness, confidence, elapsed milliseconds), `selected_answers`, and `correct_answers`. Questions include a boolean `flagged` field. Unanswered questions in historical/study reports have `result: null` and an empty selected-answer list.
 
 Regenerating creates another export folder. If names collide within the same
 second, a numeric suffix is added to the timestamp folder. `--reports PATH`
@@ -243,7 +309,7 @@ summaries contain no answer text; detailed answers remain in the report's missed
 areas and the JSON. The tutoring instructions still require reasoning before
 revealing answers, even when the full context is attached.
 
-Incomplete sessions show answered versus saved question counts. Scores use only
+Incomplete study/baseline reports show answered versus saved question counts. Scores use only
 answered questions; unanswered questions are not counted as incorrect. Reports
 summarize the selected session, without calculating older weaknesses or changing
 adaptive selection. Regenerated exports use the bank content and provenance
@@ -430,7 +496,9 @@ Major tables:
 - `questions` / `answers` — canonical content and curated area/topic
 - `question_sources` / `question_source_answers` — source occurrences and explanations
 - `sessions` / `session_questions` / `session_answers` — each quiz and its saved question/answer positions
-- `attempts` / `attempt_options` — actual learning history
+- `session_responses` / `session_response_answers` — editable exam selections, confidence, timing, and flags; retained after submission
+- `attempts` / `attempt_options` — finalized learning history (immediate in study mode)
+- `archived_attempts` / `archived_attempt_options` — preserved pre-upgrade unfinished exam attempts, excluded from learning statistics
 - `review_notes` — future human/AI annotations without mutating canonical question text
 
 A question does **not** have a mutable `weak=true` flag. Weakness/mastery is derived from raw attempts, so the weighting algorithm can change later without losing history.

@@ -56,3 +56,56 @@ class QuestionHistory:
     recent_attempts: tuple[AttemptHistory, ...]
     selection_group: str | None = None
     normalized_stem: str | None = None
+
+
+@dataclass(frozen=True)
+class DraftResponse:
+    """Persisted exam state, without correctness or feedback."""
+
+    question_id: int
+    selected: frozenset[int] = frozenset()
+    confidence: str | None = None
+    elapsed_ms: int | None = 0
+    flagged: bool = False
+    first_answered_at: str | None = None
+    updated_at: str | None = None
+
+
+@dataclass(frozen=True)
+class SessionReviewItem:
+    """One saved question and its draft, in the original quiz order."""
+
+    number: int
+    question: Question
+    response: DraftResponse
+
+    @property
+    def status(self) -> str:
+        if not self.response.selected:
+            return "UNANSWERED"
+        option_ids = {o.id for o in self.question.options}
+        if (
+            len(self.response.selected) != self.question.select_count
+            or not self.response.selected <= option_ids
+        ):
+            return "INCOMPLETE"
+        return "ANSWERED"
+
+    @property
+    def selected_labels(self) -> tuple[str, ...]:
+        return tuple(
+            o.label
+            for o in self.question.options
+            if o.id in self.response.selected
+        )
+
+
+@dataclass(frozen=True)
+class SavedExam:
+    """A resumable session summary without any grading information."""
+
+    session_id: int
+    started_at: str | None
+    answered: int
+    total: int
+    flagged: int

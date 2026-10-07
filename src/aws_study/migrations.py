@@ -145,6 +145,7 @@ def _migrate_records(
                         historical_answer_orders[old["question_id"]],
                     )
         expected = {table: len(records[table]) for table in HISTORY_TABLES}
+        repository.convert_unfinished_exams()
         summary = repository.validate(expected)
         if summary["provenance_rows"] != len(records["questions"]):
             raise ValueError(
@@ -205,6 +206,9 @@ def migrate_db(source: str | Path, dest: str | Path) -> dict[str, int]:
                     original.backup(conn)
                     repository = MigrationRepository(conn)
                     expected = repository.history_counts()
+                    if version < 6:
+                        expected.pop("session_responses", None)
+                        expected.pop("session_response_answers", None)
                     init_db(conn)
                     validation = repository.validate(expected)
                     summary = _summary(

@@ -9,6 +9,20 @@ from aws_study.terminal import print_wrapped, terminal_width, wrap_text
 
 
 class TerminalTests(unittest.TestCase):
+    def test_bold_wraps_visible_text_and_leaves_redirected_output_plain(self):
+        text = "Several words that wrap cleanly across multiple lines"
+        expected = wrap_text(text, width=20)
+        for interactive in (True, False):
+            with (
+                self.subTest(interactive=interactive),
+                redirect_stdout(StringIO()) as output,
+                patch.object(output, "isatty", return_value=interactive),
+                patch("aws_study.terminal.terminal_width", return_value=20),
+            ):
+                print_wrapped(text, bold=True)
+            styled = f"\033[1m{expected}\033[0m" if interactive else expected
+            self.assertEqual(output.getvalue(), styled + "\n")
+
     def test_width_caps_wide_terminals_and_keeps_a_right_margin(self):
         for columns, expected in ((126, 80), (80, 78), (52, 50), (2, 1)):
             with (

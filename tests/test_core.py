@@ -25,7 +25,7 @@ class CoreTests(BankTestCase):
             1,
             count=1,
             target_year=2026,
-            mode="exam",
+            mode="study",
             strategy="random",
             seed=1,
         )

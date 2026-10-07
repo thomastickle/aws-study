@@ -75,7 +75,7 @@ class ReportingTests(unittest.TestCase):
             self.cert_id,
             count=1,
             target_year=2026,
-            mode="exam",
+            mode="study",
             strategy="random",
             seed=1,
         )
@@ -214,7 +214,7 @@ class ReportingTests(unittest.TestCase):
             self.assertTrue(expected.is_file())
             self.assertIn(str(expected), output.getvalue())
             with (
-                patch("builtins.input", side_effect=["B", "C"]),
+                patch("builtins.input", side_effect=["B", "C", "s", "y"]),
                 redirect_stdout(StringIO()),
             ):
                 main(
@@ -303,7 +303,7 @@ class ReportingTests(unittest.TestCase):
             cert_id,
             count=count,
             target_year=2026,
-            mode="exam",
+            mode="study",
             strategy="random",
             seed=7,
         )
@@ -608,7 +608,7 @@ class ReportingTests(unittest.TestCase):
 
     def test_session_with_no_saved_questions_exports_empty_context(self):
         self.conn.execute(
-            "INSERT INTO sessions(certification_id) VALUES (:certification_id)",
+            "INSERT INTO sessions(certification_id,mode) VALUES (:certification_id,'study')",
             {"certification_id": self.cert_id},
         )
         session_id = self.conn.execute(

@@ -103,7 +103,7 @@ class PersistenceTests(BankTestCase):
             1,
             count=2,
             target_year=2026,
-            mode="exam",
+            mode="study",
             strategy="random",
             seed=1,
         )

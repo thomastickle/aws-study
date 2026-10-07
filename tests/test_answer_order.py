@@ -3,7 +3,7 @@
 import sqlite3
 from contextlib import closing
 
-from study_fixture import BankTestCase, question
+from study_fixture import BankTestCase, question, remove_draft_schema
 
 from aws_study.db import SCHEMA_VERSION, connect, init_db
 from aws_study.quiz_repository import QuizRepository
@@ -114,7 +114,7 @@ class AnswerOrderTests(BankTestCase):
             )
 
     def test_scoring_reports_and_context_use_session_letters_and_order(self):
-        sid = self.session(7)
+        sid = self.session(7, mode="study")
         questions = self.service.questions(sid)
         for q in questions:
             selected = {o.id for o in q.options if o.correct}
@@ -183,6 +183,7 @@ class AnswerOrderTests(BankTestCase):
     def test_schema_three_upgrade_preserves_historical_order_and_attempts(
         self,
     ):
+        remove_draft_schema(self.conn)
         self.conn.execute("DROP INDEX idx_attempt_session_question")
         self.conn.execute("DROP INDEX idx_attempt_question_recent")
         self.conn.execute("DROP TRIGGER attempts_nonnegative_elapsed_insert")
@@ -195,7 +196,7 @@ class AnswerOrderTests(BankTestCase):
                 1,
                 started_at="2026-01-01",
                 target_year=2026,
-                mode="exam",
+                mode="study",
                 strategy="random",
                 requested_count=2,
                 selected_questions=[(1, 1), (2, 1)],
@@ -206,15 +207,20 @@ class AnswerOrderTests(BankTestCase):
                     "SELECT id FROM answers WHERE question_id=1 AND is_correct=1"
                 )
             }
-            self.repository.insert_attempt(
-                sid,
-                1,
-                selected,
-                attempted_at="2026-01-01",
-                is_correct=True,
-                confidence="high",
-                elapsed_ms=900,
+            cursor = self.conn.execute(
+                """INSERT INTO attempts(session_id,question_id,attempted_at,
+                   is_correct,confidence,elapsed_ms)
+                   VALUES (:sid,1,'2026-01-01',1,'high',900)""",
+                {"sid": sid},
             )
+            self.conn.executemany(
+                "INSERT INTO attempt_options(attempt_id,option_id) VALUES (:attempt,:option)",
+                [
+                    {"attempt": cursor.lastrowid, "option": aid}
+                    for aid in selected
+                ],
+            )
+
         tables = (
             "sessions",
             "session_questions",
