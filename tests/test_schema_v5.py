@@ -77,7 +77,7 @@ class SchemaV5Tests(BankTestCase):
                 for table, rows in before.items():
                     self.assertEqual(
                         [
-                            tuple(row)
+                            tuple(row)[: len(rows[0])] if rows else tuple(row)
                             for row in self.conn.execute(
                                 f"SELECT * FROM {table} ORDER BY rowid"
                             )

@@ -13,6 +13,8 @@ from pathlib import Path
 
 from .bank_schema import BankValidationError, load_bank
 from .certification_repository import CertificationRepository
+from .converters import write_bank
+from .converters.cloudcertprep import convert_corpus
 from .db import DEFAULT_DB, SCHEMA_VERSION, connect, init_db, open_readonly
 from .exam_ui import choose_saved_exam, run_exam
 from .import_models import ImportSummary
@@ -75,9 +77,13 @@ def cmd_import(args: argparse.Namespace) -> None:
         try:
             if Path(args.db).exists():
                 with closing(open_readonly(args.db)) as conn:
-                    summary = preview_bank(conn, args.path)
+                    summary = preview_bank(
+                        conn, args.path, supersede_source=args.supersede_source
+                    )
             else:
-                summary = preview_bank(None, args.path)
+                summary = preview_bank(
+                    None, args.path, supersede_source=args.supersede_source
+                )
         except BankValidationError as error:
             summary = ImportSummary(
                 source=Path(args.path).name,
@@ -90,13 +96,45 @@ def cmd_import(args: argparse.Namespace) -> None:
         return
     bank = load_bank(args.path)
     with closing(_db(args)) as conn:
-        summary = import_bank(conn, bank, filename=Path(args.path).name)
+        summary = import_bank(
+            conn,
+            bank,
+            filename=Path(args.path).name,
+            supersede_source=args.supersede_source,
+        )
     print(json.dumps(asdict(summary), indent=2))
 
 
 def cmd_migrate(args: argparse.Namespace) -> None:
     """Migrate a supported database into a separately verified current file."""
     print(json.dumps(migrate_db(args.source, args.dest), indent=2))
+
+
+def cmd_convert(args: argparse.Namespace) -> None:
+    """Validate and publish a source bank without opening the study database."""
+    input_path, output = (
+        Path(args.input).resolve(),
+        Path(args.output).absolute(),
+    )
+    if output.resolve().is_relative_to(input_path):
+        raise ValueError(
+            "Conversion output must be outside the read-only input directory"
+        )
+    result = convert_corpus(input_path, cert=args.cert)
+    write_bank(result.bank, output, force=args.force)
+    print(
+        json.dumps(
+            {
+                "source": result.bank.source.key,
+                "output": str(output),
+                "upstream_revision": (result.bank.source.metadata or {}).get(
+                    "upstream_revision"
+                ),
+                "audit": asdict(result.audit),
+            },
+            indent=2,
+        )
+    )
 
 
 def cmd_question_group(args: argparse.Namespace) -> None:
@@ -285,6 +323,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     x.add_argument("path")
     x.add_argument(
+        "--supersede-source",
+        help="Atomically retire a named snapshot in the same source family",
+    )
+    x.add_argument(
         "--dry-run",
         action="store_true",
         help="Validate and preview against a read-only database snapshot",
@@ -378,6 +420,23 @@ def build_parser() -> argparse.ArgumentParser:
     x.add_argument("--provider", default="AWS")
     x.add_argument("--cert", required=True)
     x.set_defaults(func=cmd_stats)
+
+    x = sub.add_parser(
+        "convert", help="Convert external content to a standard bank"
+    )
+    converters = x.add_subparsers(dest="converter", required=True)
+    converter = converters.add_parser(
+        "cloudcertprep", help="Convert a local CloudCertPrep CLF-C02 snapshot"
+    )
+    converter.add_argument("--input", required=True)
+    converter.add_argument("--cert", required=True, choices=["CLF-C02"])
+    converter.add_argument("--output", required=True)
+    converter.add_argument(
+        "--force",
+        action="store_true",
+        help="Replace existing generated output",
+    )
+    converter.set_defaults(func=cmd_convert)
 
     x = sub.add_parser(
         "sources",

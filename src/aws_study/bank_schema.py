@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+from .bank_metadata import JsonObject, validate_date, validate_metadata
 from .fingerprints import normalize_match_text
 
 VERIFICATION_STATUSES = (
@@ -47,6 +48,8 @@ class SourceSpec:
     observed_year: int | None
     verified_year: int | None
     verification_status: VerificationStatus
+    metadata: JsonObject | None = None
+    snapshot_family: str | None = None
 
 
 class BankValidationError(ValueError):
@@ -68,6 +71,14 @@ class BankAnswer:
 
 
 @dataclass(frozen=True)
+class SourceClassification:
+    """A source's domain and optional task, independent of canonical taxonomy."""
+
+    area: str
+    topic: str | None = None
+
+
+@dataclass(frozen=True)
 class BankQuestion:
     """Validated question content and its optional source reference."""
 
@@ -79,6 +90,11 @@ class BankQuestion:
     answers: tuple[BankAnswer, ...]
     source_ref: str | None
     selection_group: str | None = None
+    explanation: str | None = None
+    verified_at: str | None = None
+    verification_status: VerificationStatus | None = None
+    source_classification: SourceClassification | None = None
+    source_metadata: JsonObject | None = None
 
 
 @dataclass(frozen=True)
@@ -162,9 +178,32 @@ def validate_question(record: Any, *, curated: bool = True) -> BankQuestion:
     if not isinstance(classification, dict):
         raise ValueError("classification must be an object")
     area, topic = classification.get("area"), classification.get("topic")
-    if curated:
+    raw_source_classification = record.get("source_classification")
+    source_classification = None
+    if raw_source_classification is not None:
+        if not isinstance(raw_source_classification, dict):
+            raise ValueError("source_classification must be an object")
+        source_area = _text(
+            raw_source_classification.get("area"), "source_classification.area"
+        )
+        source_topic = raw_source_classification.get("topic")
+        if source_topic is not None:
+            source_topic = _text(source_topic, "source_classification.topic")
+        source_classification = SourceClassification(source_area, source_topic)
+    if curated and (
+        "classification" in record or source_classification is None
+    ):
         area = _text(area, "classification.area")
         topic = _text(topic, "classification.topic")
+    explanation = record.get("explanation")
+    if explanation is not None and not isinstance(explanation, str):
+        raise ValueError("explanation must be text or null")
+    verified_at = record.get("verified_at")
+    if verified_at is not None:
+        verified_at = validate_date(verified_at, "verified_at")
+    status = record.get("verification_status")
+    if status is not None and status not in VERIFICATION_STATUSES:
+        raise ValueError("unknown occurrence verification_status")
     ref = record.get("source_ref")
     if ref is not None:
         ref = _text(ref, "source_ref")
@@ -172,13 +211,30 @@ def validate_question(record: Any, *, curated: bool = True) -> BankQuestion:
     if group is not None:
         group = _text(group, "selection_group")
     return BankQuestion(
-        text, kind, count, area, topic, tuple(answers), ref, group
+        text,
+        kind,
+        count,
+        area,
+        topic,
+        tuple(answers),
+        ref,
+        group,
+        explanation,
+        verified_at,
+        status,
+        source_classification,
+        validate_metadata(record.get("source_metadata"), "source_metadata"),
     )
 
 
 def load_bank(path: str | Path) -> Bank:
     """Read a complete v2 file and report all invalid question records."""
     data = json.loads(Path(path).read_text(encoding="utf-8"))
+    return validate_bank(data)
+
+
+def validate_bank(data: Any) -> Bank:
+    """Validate the standard representation shared by files and converters."""
     if (
         not isinstance(data, dict)
         or type(data.get("schema_version")) is not int
@@ -208,6 +264,16 @@ def load_bank(path: str | Path) -> Bank:
                 raise ValueError(f"source.{field} must be a year or null")
         if source.get("verification_status") not in VERIFICATION_STATUSES:
             raise ValueError("unknown source verification_status")
+        metadata = validate_metadata(source.get("metadata"), "source.metadata")
+        family = source.get("snapshot_family")
+        if family is not None:
+            family = _text(family, "source.snapshot_family")
+        if source["type"] == "third_party" and source[
+            "verification_status"
+        ] in ("official_current", "official_older"):
+            raise ValueError(
+                "third_party sources cannot claim official status"
+            )
     except ValueError as error:
         raise BankValidationError([str(error)]) from error
     records = data.get("questions")
@@ -217,6 +283,15 @@ def load_bank(path: str | Path) -> Bank:
     for position, record in enumerate(records, 1):
         try:
             question = validate_question(record)
+            if source[
+                "type"
+            ] == "third_party" and question.verification_status in (
+                "official_current",
+                "official_older",
+            ):
+                raise ValueError(
+                    "third_party occurrences cannot claim official status"
+                )
             if question.source_ref is not None:
                 if question.source_ref in refs:
                     raise ValueError("duplicate source_ref")
@@ -239,6 +314,8 @@ def load_bank(path: str | Path) -> Bank:
             source.get("observed_year"),
             source.get("verified_year"),
             source["verification_status"],
+            metadata,
+            family,
         ),
         tuple(questions),
     )

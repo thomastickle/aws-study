@@ -113,15 +113,16 @@ Linux/macOS:
 There are **no runtime package downloads**. The top-level `aws-study.py` launcher loads the code directly from `src/`. The `pyproject.toml` remains available if you later want to package/install it conventionally.
 
 Local study data lives under `private/` and is ignored by Git. New databases
-use database schema 6 (with schema-v2 question-bank inputs). Existing canonical
-schema-2 through schema-5 databases upgrade transactionally on opening. Schema 5
+use database schema 7 (with schema-v2 question-bank inputs). Existing canonical
+schema-2 through schema-6 databases upgrade transactionally on opening. Schema 5
 introduced unique session/question attempts and nonnegative elapsed time; schema
-6 adds persisted exam drafts and archived legacy attempts.
+6 adds persisted exam drafts and archived legacy attempts. Schema 7 adds source
+classification, exact verification dates, explanations, and immutable snapshots.
 
 ### Migrating databases
 
 `migrate-db` creates a validated copy and never replaces its source. The destination
-must not exist. Legacy v1 databases require this command; canonical v2–v5 databases
+must not exist. Legacy v1 databases require this command; canonical v2–v6 databases
 also upgrade automatically when opened.
 
 ```bash
@@ -376,12 +377,15 @@ Questions, sources, attempts, sessions, reports, and adaptive weights stay separ
 The importer accepts **question-bank JSON schema v2 only**. Certification, source and curated
 classification come from the file. A synthetic example is in
 `examples/question-bank.sample.json`.
-`examples/question-bank.schema.json` describes the v2 structure. Additional
-metadata fields remain accepted and ignored. Runtime/history fields are
+`examples/question-bank.schema.json` describes the v2 structure. The optional provenance fields described in the
+[conversion guide](docs/question-bank-conversion.md) are validated and retained;
+other additional fields remain accepted and ignored. Runtime/history fields are
 rejected, and Python validation also enforces normalized answer uniqueness,
 unique source references, and equality between `select_count` and correct answers.
 
-There is no question-bank file migration command. The old combined
+The offline `convert cloudcertprep` command produces standard v2 banks; see the
+[conversion guide](docs/question-bank-conversion.md). There is no legacy v1
+question-bank file migration command. The old combined
 `aws-clf-c02-official-2026.json` is obsolete v1 input; the three curated source
 files under `private/question-banks/aws/clf-c02/2026/` replace it. Its embedded
 selected answers, confidence, and timing belong in database history, which
@@ -403,8 +407,9 @@ Identity uses normalized question text plus the complete unordered answer set,
 scoped to certification. Normalization applies Unicode NFKC, whitespace folding,
 and case folding; punctuation remains significant. Original displayed text is
 preserved. Answer order and correctness are excluded from identity; conflicting
-correct-answer sets, types, selection counts, or curated classifications are
-errors. Changed content under an existing source reference is also an error.
+correct-answer sets, types, or selection counts are errors. Source taxonomy
+differences are retained in provenance; existing non-null canonical classification
+is never overwritten by later imports. Changed content under an existing source reference is also an error.
 
 One canonical question can have multiple source occurrences, including different
 references in the same source. Each retains answer order and rationales. Quiz
@@ -415,8 +420,8 @@ questions, provenance, or history.
 
 The first source establishes canonical answer order and rationales. Subsequent
 imports retain that presentation and update the source-specific explanations.
-Text corrections that change identity require an explicit future revision workflow;
-they are not silently applied during import.
+Immutable source snapshots support explicit replacement through
+`--supersede-source`; ordinary imports never silently rewrite changed content.
 
 An explicit `source-verify` update survives later bank imports, including older
 verification metadata. It applies to all occurrences from that source. A question

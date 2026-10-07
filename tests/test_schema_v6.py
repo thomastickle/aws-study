@@ -101,16 +101,16 @@ class SchemaV6Tests(BankTestCase):
     ):
         assets = self.root / "migration-assets"
         assets.mkdir()
-        for name in MIGRATION_STEPS[6]:
+        for name in (*MIGRATION_STEPS[6], *MIGRATION_STEPS[7]):
             (assets / name).write_text(
                 files("aws_study").joinpath(name).read_text()
             )
-        future = assets / "schema_v7.sql"
+        future = assets / "schema_v8.sql"
         script = """
             CREATE TABLE future_check (converted INTEGER CHECK(converted=1));
             INSERT INTO future_check SELECT COUNT(*) FROM archived_attempts
                 WHERE session_id=1;
-            PRAGMA user_version=7;
+            PRAGMA user_version=8;
         """
         for fail in (True, False):
             with (
@@ -125,9 +125,9 @@ class SchemaV6Tests(BankTestCase):
                     script + ("SELECT * FROM missing;" if fail else "")
                 )
                 with (
-                    patch("aws_study.db.SCHEMA_VERSION", 7),
+                    patch("aws_study.db.SCHEMA_VERSION", 8),
                     patch.dict(
-                        "aws_study.db.MIGRATION_STEPS", {7: (future.name,)}
+                        "aws_study.db.MIGRATION_STEPS", {8: (future.name,)}
                     ),
                     patch("aws_study.db.files", return_value=assets),
                 ):
@@ -146,7 +146,7 @@ class SchemaV6Tests(BankTestCase):
                         init_db(conn)
                         self.assertEqual(
                             conn.execute("PRAGMA user_version").fetchone()[0],
-                            7,
+                            8,
                         )
                         self.assertEqual(
                             conn.execute(
@@ -177,7 +177,7 @@ class SchemaV6Tests(BankTestCase):
                 sessions = self.rows(conn, "sessions")
                 expected = MigrationRepository(conn).history_counts()
                 init_db(conn)
-                self.assertEqual(schema_version(conn), 6)
+                self.assertEqual(schema_version(conn), SCHEMA_VERSION)
                 self.assertEqual(
                     self.rows(conn, "archived_attempts"), original[:1]
                 )

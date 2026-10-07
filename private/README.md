@@ -15,7 +15,7 @@ The bank retains question variants and their separate answers/history. Quiz
 selection allows one per normalized stem or curated `selection_group` in each
 run, choosing among eligible variants randomly according to the quiz strategy.
 Source files may carry `selection_group` for confirmed wording variants.
-Canonical schema-2 through schema-5 databases upgrade transactionally to schema 6 on opening; the
+Canonical schema-2 through schema-6 databases upgrade transactionally to schema 7 on opening; the
 original legacy database still requires explicit migration into a separate file.
 New sessions shuffle answers and save their order, so answer letters agree with
 later reports. Existing sessions retain their displayed order and history.
@@ -29,7 +29,7 @@ regenerated from the session history using `python aws-study.py report <id>`.
 
 `question-banks/aws-clf-c02-official-2026.json` is an obsolete combined v1 bank.
 Use the three curated v2 files in `question-banks/aws/clf-c02/2026/` for imports.
-The old file also embeds personal attempt data; there is no bank-file migration
+The old file also embeds personal attempt data; there is no legacy bank-file migration
 command. Database history is preserved by `migrate-db`, separately from the bank
 format. The obsolete file is retained as a legacy archive.
 
@@ -39,7 +39,7 @@ selected/correct answer IDs, and result (correctness, confidence, elapsed time).
 Context questions include boolean `flagged` state. Unanswered historical/study
 questions remain present with `result: null` and empty `selected_answer_ids`.
 New exports use context schema 3; existing reports are not rewritten. Database
-schema 6 and question-bank schema 2 are unchanged.
+schema 7 and question-bank schema 2 are independently versioned.
 
 See the [context format](../docs/context-format.md) for answer references,
 source-specific rationale inheritance/overrides, and provenance fields. Exports
@@ -76,3 +76,23 @@ baselines, choosing the newest reportable interactive session. Partial or empty
 study sessions remain eligible; explicit exam draft IDs still require submission.
 Active question time includes confidence entry but excludes persistence, review,
 and offline time. Answer selection and its elapsed interval save atomically.
+
+## Generated CloudCertPrep banks
+
+Keep downloaded inputs in `imports/cloudcertprep/` and converted banks in
+`generated/`. The converter accepts a full local checkout or all four loose
+`domain1.json` through `domain4.json` files. It never opens the study database.
+
+```bash
+python aws-study.py convert cloudcertprep --input private/imports/cloudcertprep \
+  --cert CLF-C02 --output private/generated/cloudcertprep-clf-c02.json
+python aws-study.py import-json private/generated/cloudcertprep-clf-c02.json --dry-run
+```
+
+Only import after inspecting the preview. Four questions in the supplied
+1,050-record snapshot have verification dates; the others require
+`--include-unverified` or deliberate manual source verification. Updating bank
+content does not verify it. New snapshots require explicit replacement; see the
+[conversion guide](../docs/question-bank-conversion.md). Historical questions,
+attempts, and old provenance are retained. Generated files contain upstream
+license attribution and must stay outside Git.

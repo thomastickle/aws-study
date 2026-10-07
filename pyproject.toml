@@ -31,6 +31,7 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.package-data]
 aws_study = ["schema*.sql"]
+"aws_study.converters" = ["*.LICENSE"]
 
 [tool.ruff]
 target-version = "py312"
