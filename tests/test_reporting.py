@@ -24,7 +24,7 @@ from aws_study.quiz_repository import QuizRepository
 from aws_study.quiz_service import QuizService
 from aws_study.report_repository import ReportRepository
 from aws_study.report_service import ReportService
-from aws_study.reporting import write_report_bundle
+from aws_study.reporting import continuation_prompt, write_report_bundle
 
 
 class ReportingTests(unittest.TestCase):
@@ -271,41 +271,354 @@ class ReportingTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "No interactive sessions"):
             self.reports.resolve_session("latest")
 
-    def test_context_includes_misses_and_low_confidence_only(self):
-        extra_path = self.root / "extra.json"
-        extra = [fixture_question(index) for index in (1, 2)]
-        extra_path.write_text(
-            json.dumps(v2_bank(extra, cert="CLF-C02", source="extra"))
+    def _session(self, count, *, multi_select=False):
+        questions = []
+        for index in range(1, count + 1):
+            question = fixture_question(index)
+            question["classification"]["topic"] = f"Report topic {index}"
+            for answer in question["answers"]:
+                kind = "correct" if answer["correct"] else "wrong"
+                answer["text"] = f"Synthetic {kind} answer {index}"
+            if multi_select:
+                question.update(type="multi_select", select_count=2)
+                question["answers"].append(
+                    {
+                        "text": f"Second correct answer {index}",
+                        "correct": True,
+                        "rationale": "Second correct rationale",
+                    }
+                )
+            questions.append(question)
+        self.fixture_bank = v2_bank(
+            questions, cert="REPORT-C01", source="report-fixtures"
         )
-        import_internal_bank(self.conn, extra_path)
+        path = self.root / "session-bank.json"
+        path.write_text(json.dumps(self.fixture_bank), encoding="utf-8")
+        import_internal_bank(self.conn, path)
+        cert_id = self.conn.execute(
+            "SELECT id FROM certifications WHERE code='REPORT-C01'"
+        ).fetchone()[0]
         service = QuizService(QuizRepository(self.conn))
         session_id = service.create_session(
-            self.cert_id,
-            count=3,
+            cert_id,
+            count=count,
             target_year=2026,
             mode="exam",
             strategy="random",
-            seed=1,
+            seed=7,
         )
-        questions = service.questions(session_id)
-        for index, question in enumerate(questions):
-            selected = {
-                o.id for o in question.options if o.correct == (index != 0)
-            }
+        return service, session_id, service.questions(session_id)
+
+    def _export(self, session_id):
+        bundle = self.reports.bundle(session_id)
+        paths = write_report_bundle(bundle, self.root / "exports")
+        context = json.loads(paths["context"].read_text(encoding="utf-8"))
+        report = paths["report"].read_text(encoding="utf-8")
+        prompt = paths["prompt"].read_text(encoding="utf-8").rstrip("\n")
+        self.assertEqual(context["continuation_prompt"], prompt)
+        self.assertEqual(
+            report.split("```text\n", 1)[1].split("\n```", 1)[0], prompt
+        )
+        self.assertEqual(
+            continuation_prompt(self.reports.session_data(session_id)), prompt
+        )
+        with (
+            patch(
+                "aws_study.cli._db",
+                side_effect=lambda args: connect(self.root / "study.db"),
+            ),
+            redirect_stdout(StringIO()) as output,
+        ):
+            main(["prompt", str(session_id)])
+        self.assertEqual(output.getvalue(), prompt + "\n")
+        return bundle, context, report, prompt
+
+    def test_perfect_sessions_export_all_questions_and_saved_answer_order(
+        self,
+    ):
+        for count in (10, 20):
+            with self.subTest(count=count):
+                service, session_id, questions = self._session(count)
+                for position, question in enumerate(questions, start=1):
+                    service.record_answer(
+                        session_id,
+                        question.id,
+                        {o.id for o in question.options if o.correct},
+                        "high",
+                        position * 100,
+                    )
+                service.finish_session(session_id)
+                bundle, context, report, prompt = self._export(session_id)
+                self.assertEqual(context["schema_version"], 2)
+                self.assertEqual(len(context["questions"]), count)
+                self.assertEqual(
+                    [q["id"] for q in context["questions"]],
+                    [q.id for q in questions],
+                )
+                self.assertNotEqual(
+                    [q.id for q in questions], sorted(q.id for q in questions)
+                )
+                for position, (record, original) in enumerate(
+                    zip(context["questions"], questions), start=1
+                ):
+                    self.assertEqual(record["position"], position)
+                    self.assertEqual(record["question_text"], original.text)
+                    self.assertEqual(
+                        record["result"],
+                        {
+                            "is_correct": True,
+                            "confidence": "high",
+                            "elapsed_ms": position * 100,
+                        },
+                    )
+                    self.assertIs(record["result"]["is_correct"], True)
+                    self.assertEqual(
+                        [a["id"] for a in record["answers"]],
+                        [o.id for o in original.options],
+                    )
+                    self.assertEqual(
+                        [a["label"] for a in record["answers"]],
+                        [o.label for o in original.options],
+                    )
+                    self.assertEqual(
+                        [a["rationale"] for a in record["answers"]],
+                        [o.rationale for o in original.options],
+                    )
+                    self.assertEqual(
+                        record["selected_answers"], record["correct_answers"]
+                    )
+                    self.assertNotIn(record["topic"], prompt)
+                self.assertNotIn("## Reinforcement candidates", report)
+                self.assertIn(f"Score: {count}/{count} (100.0%)", report)
+                self.assertEqual(len(bundle.data["attempts"]), count)
+
+    def test_mixed_session_priorities_no_answer_leak_and_shared_prompt(self):
+        service, session_id, questions = self._session(6)
+        states = [
+            (True, "medium"),
+            (False, "high"),
+            (True, "low"),
+            (True, "high"),
+            (True, None),
+            (False, None),
+        ]
+        # Record attempts backwards to distinguish attempt order from quiz order.
+        for index in reversed(range(len(questions))):
+            question = questions[index]
+            correct, confidence = states[index]
             service.record_answer(
                 session_id,
                 question.id,
-                selected,
-                ("high", "low", "medium")[index],
-                0,
+                {o.id for o in question.options if o.correct == correct},
+                confidence,
+                index * 100,
             )
         service.finish_session(session_id)
-        bundle = self.reports.bundle(session_id)
+        bundle, context, report, prompt = self._export(session_id)
         self.assertEqual(
-            [q["id"] for q in bundle.questions],
-            sorted(q.id for q in questions[:2]),
+            [q["id"] for q in context["questions"]], [q.id for q in questions]
         )
-        self.assertEqual(len(bundle.data["attempts"]), 3)
+        self.assertEqual(
+            [a["question_id"] for a in bundle.data["attempts"]],
+            [q.id for q in questions],
+        )
+        for index, record in enumerate(context["questions"]):
+            self.assertEqual(record["result"]["is_correct"], states[index][0])
+            self.assertEqual(record["result"]["confidence"], states[index][1])
+            self.assertEqual(record["result"]["elapsed_ms"], index * 100)
+            for answer in record["answers"]:
+                self.assertNotIn(answer["answer_text"], prompt)
+            self.assertNotIn(record["question_text"], prompt)
+        topics = [q["topic"] for q in context["questions"]]
+        positions = [prompt.index(topics[i]) for i in (1, 5, 2, 0)]
+        self.assertEqual(positions, sorted(positions))
+        for index in (3, 4):
+            self.assertNotIn(topics[index], prompt)
+        self.assertIn("report-fixtures #", prompt)
+        self.assertIn(
+            "Do not reveal or hint at answers from prior attempts", prompt
+        )
+        self.assertIn("attached/local question bank", prompt)
+        self.assertLess(len(prompt), 3000)
+        section = report.split("## Reinforcement candidates", 1)[1].split(
+            "## Compact ChatGPT", 1
+        )[0]
+        for index in (2, 0):
+            self.assertIn(topics[index], section)
+        for index in (1, 3, 4, 5):
+            self.assertNotIn(topics[index], section)
+        self.assertIn("Confidence: medium", section)
+        for record in context["questions"]:
+            for answer in record["answers"]:
+                self.assertNotIn(answer["answer_text"], section)
+        for index in (1, 5):
+            for answer in context["questions"][index]["answers"]:
+                self.assertIn(answer["answer_text"], report)
+        filtered = continuation_prompt(
+            bundle.data, include_low_confidence=False
+        )
+        self.assertNotIn(topics[2], filtered)
+        self.assertIn(topics[0], filtered)
+
+    def test_multiple_sources_keep_their_answers_and_rationales(self):
+        service, session_id, questions = self._session(1)
+        duplicate = v2_bank(
+            self.fixture_bank["questions"], cert="REPORT-C01", source="other"
+        )
+        duplicate["questions"][0]["answers"].reverse()
+        duplicate["questions"][0]["answers"][0]["rationale"] = (
+            "Other explanation"
+        )
+        path = self.root / "other-bank.json"
+        path.write_text(json.dumps(duplicate), encoding="utf-8")
+        import_internal_bank(self.conn, path)
+        question = questions[0]
+        service.record_answer(
+            session_id,
+            question.id,
+            {o.id for o in question.options if o.correct},
+            "low",
+            1,
+        )
+        service.finish_session(session_id)
+        _, context, _, _ = self._export(session_id)
+        record = context["questions"][0]
+        self.assertEqual(
+            [s["source_key"] for s in record["sources"]],
+            ["report-fixtures", "other"],
+        )
+        for source in record["sources"]:
+            self.assertEqual(source["source_ref"], "1")
+            self.assertEqual(len(source["answers"]), 2)
+        self.assertEqual(
+            record["sources"][1]["answers"][0]["rationale"],
+            "Other explanation",
+        )
+        self.assertEqual(
+            [a["id"] for a in record["answers"]],
+            [o.id for o in question.options],
+        )
+
+    def test_multi_select_exports_complete_selected_and_correct_sets(self):
+        service, session_id, questions = self._session(2, multi_select=True)
+        for index, question in enumerate(questions):
+            correct_ids = {o.id for o in question.options if o.correct}
+            selected = (
+                correct_ids
+                if index == 0
+                else {
+                    next(o.id for o in question.options if not o.correct),
+                    next(o.id for o in question.options if o.correct),
+                }
+            )
+            service.record_answer(
+                session_id, question.id, selected, "medium", 5
+            )
+        service.finish_session(session_id)
+        _, context, _, _ = self._export(session_id)
+        for index, (record, question) in enumerate(
+            zip(context["questions"], questions)
+        ):
+            self.assertEqual(record["question_type"], "multi_select")
+            self.assertEqual(record["select_count"], 2)
+            self.assertEqual(len(record["selected_answers"]), 2)
+            self.assertEqual(len(record["correct_answers"]), 2)
+            self.assertEqual(record["result"]["is_correct"], index == 0)
+            correct_ids = {o.id for o in question.options if o.correct}
+            self.assertEqual(
+                {a["id"] for a in record["correct_answers"]}, correct_ids
+            )
+            selected_ids = {a["id"] for a in record["selected_answers"]}
+            self.assertEqual(selected_ids == correct_ids, index == 0)
+            self.assertEqual(
+                [a["display_order"] for a in record["selected_answers"]],
+                sorted(a["display_order"] for a in record["selected_answers"]),
+            )
+
+    def test_unanswered_questions_remain_visible_and_do_not_count_as_misses(
+        self,
+    ):
+        service, session_id, questions = self._session(3)
+        for answered in (0, 1):
+            with self.subTest(answered=answered):
+                if answered:
+                    question = questions[1]
+                    service.record_answer(
+                        session_id,
+                        question.id,
+                        {o.id for o in question.options if o.correct},
+                        None,
+                        0,
+                    )
+                    # Imported history can have no elapsed measurement.
+                    self.conn.execute(
+                        "UPDATE attempts SET elapsed_ms=NULL "
+                        "WHERE session_id=:session_id",
+                        {"session_id": session_id},
+                    )
+                    self.conn.commit()
+                bundle, context, report, prompt = self._export(session_id)
+                self.assertEqual(len(context["questions"]), 3)
+                self.assertEqual(len(bundle.data["attempts"]), answered)
+                self.assertIn(f"Answered: {answered}/3", report)
+                self.assertIn(f"Incomplete session: {answered}/3", prompt)
+                self.assertNotIn("MISSED", prompt)
+                self.assertNotIn("## Reinforcement candidates", report)
+                self.assertIn(
+                    "Score: 1/1 (100.0%)" if answered else "Score: 0/0 (0.0%)",
+                    report,
+                )
+                for index, record in enumerate(context["questions"]):
+                    if answered and index == 1:
+                        self.assertEqual(
+                            record["result"],
+                            {
+                                "is_correct": True,
+                                "confidence": None,
+                                "elapsed_ms": None,
+                            },
+                        )
+                    else:
+                        self.assertIsNone(record["result"])
+                        self.assertEqual(record["selected_answers"], [])
+                    self.assertTrue(record["correct_answers"])
+                    self.assertTrue(record["answers"])
+
+    def test_session_queries_are_batched_and_do_not_write(self):
+        service, session_id, _ = self._session(20)
+        before = self.conn.serialize()
+        statements: list[str] = []
+        self.conn.set_trace_callback(statements.append)
+        try:
+            bundle = self.reports.bundle(session_id)
+        finally:
+            self.conn.set_trace_callback(None)
+        self.assertEqual(len(bundle.questions), 20)
+        self.assertLessEqual(len(statements), 6)
+        self.assertEqual(self.conn.serialize(), before)
+
+    def test_missing_saved_answer_order_is_reported_instead_of_invented(self):
+        _, session_id, _ = self._session(1)
+        self.conn.execute(
+            "DELETE FROM session_answers WHERE session_id=:session_id",
+            {"session_id": session_id},
+        )
+        with self.assertRaisesRegex(ValueError, "has no saved answer order"):
+            self.reports.bundle(session_id)
+
+    def test_session_with_no_saved_questions_exports_empty_context(self):
+        self.conn.execute(
+            "INSERT INTO sessions(certification_id) VALUES (:certification_id)",
+            {"certification_id": self.cert_id},
+        )
+        session_id = self.conn.execute(
+            "SELECT MAX(id) FROM sessions"
+        ).fetchone()[0]
+        self.conn.commit()
+        _, context, report, prompt = self._export(session_id)
+        self.assertEqual(context["questions"], [])
+        self.assertIn("Answered: 0/0", report)
+        self.assertIn("No answered questions", prompt)
 
 
 if __name__ == "__main__":

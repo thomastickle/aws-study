@@ -32,3 +32,15 @@ Use the three curated v2 files in `question-banks/aws/clf-c02/2026/` for imports
 The old file also embeds personal attempt data; there is no bank-file migration
 command. Database history is preserved by `migrate-db`, separately from the bank
 format. The obsolete file is retained as a legacy archive.
+
+Each new context JSON retains every saved session question in quiz order, plus
+its saved answer letters, complete answers/rationales, source provenance,
+selected/correct answers, and result (correctness, confidence, elapsed time).
+Unanswered questions remain present with `result: null`. Context schema version
+2 is retained with these additive fields. Existing reports are not rewritten.
+
+The compact prompt prioritizes misses, then correct low- and medium-confidence
+answers, without including selected or correct answer text. The Markdown report
+keeps detailed missed-answer review and adds reinforcement candidates only when
+needed. Incomplete reports show answered versus saved counts and score only
+answered questions. No older-history analysis is added.

@@ -1,15 +1,13 @@
-"""Assemble report inputs and choose reinforcement questions."""
+"""Assemble full session context and attempted-question review records."""
 
 from __future__ import annotations
 
-from .report_models import ReportBundle, ReportChoice, SessionData
+from .report_models import JsonRecord, ReportBundle, SessionData
 from .report_repository import ReportRepository
 
 
-def _choice_text(choice: ReportChoice) -> str:
-    # Label choices using the saved session display order.
-    prefix = f"{choice.label}. " if choice.label is not None else ""
-    return prefix + choice.text
+def _choice_text(answer: JsonRecord) -> str:
+    return f"{answer['label']}. {answer['answer_text']}"
 
 
 class ReportService:
@@ -27,33 +25,48 @@ class ReportService:
         )
 
     def session_data(self, session_id: int) -> SessionData:
-        """Assemble the established session/attempt shape for prompts."""
+        """Build all exports from the same saved session membership."""
         session = self._repository.session(session_id)
+        questions = []
         attempts = []
-        for attempt in self._repository.attempts(session_id):
-            details = dict(attempt.details)
-            details["selected"] = [_choice_text(o) for o in attempt.selected]
-            details["correct"] = [_choice_text(o) for o in attempt.correct]
-            attempts.append(details)
-        return {"session": session, "attempts": attempts}
+        for record in self._repository.session_questions(session_id):
+            question = dict(record.details)
+            question["answers"] = list(record.answers)
+            question["selected_answers"] = [
+                answer
+                for answer in record.answers
+                if answer["id"] in record.selected_answer_ids
+            ]
+            question["correct_answers"] = [
+                answer for answer in record.answers if answer["is_correct"]
+            ]
+            question["result"] = None
+            if record.attempt is not None:
+                question["result"] = {
+                    "is_correct": bool(record.attempt["is_correct"]),
+                    "confidence": record.attempt["confidence"],
+                    "elapsed_ms": record.attempt["elapsed_ms"],
+                }
+                attempt = dict(record.attempt)
+                for key in ("question_text", "area", "topic", "sources"):
+                    attempt[key] = question[key]
+                attempt["selected"] = [
+                    _choice_text(answer)
+                    for answer in question["selected_answers"]
+                ]
+                attempt["correct"] = [
+                    _choice_text(answer)
+                    for answer in question["correct_answers"]
+                ]
+                attempts.append(attempt)
+            questions.append(question)
+        return {
+            "session": session,
+            "attempts": attempts,
+            "questions": tuple(questions),
+        }
 
     def bundle(self, session_id: int) -> ReportBundle:
-        """Include exact content only for misses and low-confidence answers."""
+        """Prepare the complete session before its connection is closed."""
         data = self.session_data(session_id)
-        question_ids = sorted(
-            {
-                attempt["question_id"]
-                for attempt in data["attempts"]
-                if not attempt["is_correct"]
-                or attempt.get("confidence") == "low"
-            }
-        )
-        return ReportBundle(
-            data,
-            tuple(
-                self._repository.question_context(
-                    question_id, session_id=session_id
-                )
-                for question_id in question_ids
-            ),
-        )
+        return ReportBundle(data, data["questions"])
