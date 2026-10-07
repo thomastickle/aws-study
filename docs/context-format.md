@@ -1,6 +1,6 @@
 # Session context format
 
-New exports use context schema 3 independently of SQLite schema 6 and question-bank
+New exports use context schema 3 independently of SQLite schema 7 and question-bank
 schema 2. Every saved session question is present, including perfect sessions
 and unanswered historical/study questions. Unsubmitted interactive exam drafts
 cannot be exported.
@@ -42,10 +42,19 @@ IDs remain identifiers within the context pack; they need no external database.
 
 Context schema 3 replaces the previous full selected/correct objects with ID
 references. Existing version-2 exports remain untouched; new exports use only
-version 3. SQLite schema 6 and question-bank schema 2 are unchanged. Both the
+version 3. Question-bank schema 2 remains compatible. Both the
 attached session context and local bank supply exact wording and answers; the
 compact prompt supplies learning-state metadata and keeps its instruction to
 avoid revealing prior answers before you respond.
+
+Source occurrences may additionally include `explanation`, `verified_at`,
+`source_classification`, `source_metadata`, source-level `metadata`,
+`snapshot_family`, and `superseded_by_source_key`. These optional fields retain
+upstream explanations, dates, services, revision identity, and attribution.
+`verified_at` is the exact supplied occurrence date; a manual source override
+controls effective status/year without erasing that date. Question-level
+explanations appear once per occurrence, separately from answer rationales.
+These additions remain context schema 3; compact prompts never include them.
 
 ## Report and tutoring behavior
 

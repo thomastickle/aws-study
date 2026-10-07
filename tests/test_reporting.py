@@ -465,7 +465,15 @@ class ReportingTests(unittest.TestCase):
                     <= source.keys()
                 )
                 for field, value in source.items():
-                    if field != "answers":
+                    if field == "source_classification":
+                        self.assertEqual(
+                            value,
+                            {
+                                "area": raw["source_area"],
+                                "topic": raw["source_topic"],
+                            },
+                        )
+                    elif field != "answers":
                         self.assertEqual(value, raw[field])
                 for field in ("id", "question_id", "source_id", "created_at"):
                     self.assertNotIn(field, source)

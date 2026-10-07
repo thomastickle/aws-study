@@ -14,6 +14,7 @@ class ImportSummary:
     new_provenance_links: int = 0
     conflicts: list[str] = field(default_factory=list)
     invalid_records: list[str] = field(default_factory=list)
+    superseded_sources: list[str] = field(default_factory=list)
 
 
 class ImportConflict(ValueError):

@@ -7,7 +7,12 @@ from importlib.resources import files
 from io import StringIO
 from unittest.mock import patch
 
-from study_fixture import BankTestCase, question, remove_draft_schema
+from study_fixture import (
+    BankTestCase,
+    question,
+    remove_draft_schema,
+    remove_source_schema,
+)
 from test_migrations import legacy_fixture
 from test_schema_v5 import remove_v5_invariants
 
@@ -49,7 +54,9 @@ class DatabaseMigrationTests(BankTestCase):
         service.finish_session(sid)
 
     def downgrade(self, version):
-        remove_draft_schema(self.conn)
+        remove_source_schema(self.conn)
+        if version < 6:
+            remove_draft_schema(self.conn)
         if version < 5:
             remove_v5_invariants(self.conn)
         if version < 4:
@@ -78,9 +85,9 @@ class DatabaseMigrationTests(BankTestCase):
     def test_canonical_versions_migrate_with_wal_history_and_saved_answer_order(
         self,
     ):
-        for version in (2, 3, 4, 5, 6):
+        for version in (2, 3, 4, 5, 6, 7):
             with self.subTest(version=version):
-                if version != 6:
+                if version != SCHEMA_VERSION:
                     self.downgrade(version)
                 before = self.snapshot(self.conn)
                 source_bytes = self.source.read_bytes()
@@ -97,7 +104,12 @@ class DatabaseMigrationTests(BankTestCase):
                 with closing(open_readonly(dest)) as upgraded:
                     after = self.snapshot(upgraded)
                     for table, rows in before.items():
-                        self.assertEqual(after[table], rows)
+                        self.assertEqual(
+                            [row[: len(rows[0])] for row in after[table]]
+                            if rows
+                            else after[table],
+                            rows,
+                        )
                     self.assertEqual(schema_version(upgraded), SCHEMA_VERSION)
                     self.assertEqual(
                         upgraded.execute(

@@ -1,11 +1,11 @@
 # Database migrations
 
-`migrate-db` accepts supported study databases v1–v6 and creates a validated copy
-using the current SQLite schema, v6. Legacy v1 content/history is converted;
-v2–v5 copies receive versioned upgrades in order. A v6 source produces a validated
+`migrate-db` accepts supported study databases v1–v7 and creates a validated copy
+using the current SQLite schema, v7. Legacy v1 content/history is converted;
+v2–v6 copies receive versioned upgrades in order. A v7 source produces a validated
 copy, preserving drafts, flags, and archives. The source stays intact and the
 destination must not exist. Preservation counts include active and archived
-attempt history; drafts are counted separately when copying v6. Question-bank
+attempt history; drafts are counted separately when copying v6 or v7. Question-bank
 JSON remains independently versioned at schema v2.
 
 For a legacy v1 database, create a separate destination (it must not already exist):
@@ -73,6 +73,16 @@ active attempts affect adaptive selection. Services acquire a SQLite write lock
 before checking session state; new attempt IDs are allocated inside the INSERT
 above the maximum of both active and archived IDs. Writers therefore cannot
 reuse an archived identity or concurrently allocate the same ID.
+
+## Source provenance in v7
+
+The additive v7 migration adds question-level explanations, exact upstream
+verification dates, source classification, and JSON metadata to provenance.
+Existing source classification is backfilled from canonical area/topic; no
+verification dates are invented. Sources gain immutable snapshot fingerprints,
+family identity, metadata, and a supersession link. Questions, answer IDs,
+sessions, drafts, archives, rationales, and selected answers are preserved.
+Older databases run v6 draft conversion before these additions.
 
 ## SQLite data model
 

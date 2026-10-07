@@ -116,8 +116,11 @@ class ReportRepository(SQLiteRepository):
             dict(r)
             for r in self._conn.execute(
                 f"""SELECT qs.*,s.source_key,s.name,s.source_type,s.source_file,
-                       s.observed_year,s.verification_origin
+                       s.observed_year,s.verification_origin,
+                       s.metadata_json AS source_metadata_json,s.snapshot_family,
+                       replacement.source_key AS superseded_by_source_key
                 FROM question_sources qs JOIN sources s ON s.id=qs.source_id
+                LEFT JOIN sources replacement ON replacement.id=s.superseded_by_source_id
                 WHERE qs.question_id IN ({binds})
                 ORDER BY s.id,qs.source_order,qs.id""",
                 params,

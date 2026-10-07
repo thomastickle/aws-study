@@ -112,6 +112,7 @@ class BankTestCase(unittest.TestCase):
 
 def remove_draft_schema(conn):
     """Remove v6-only tables when constructing an older synthetic database."""
+    remove_source_schema(conn)
     for table in (
         "session_response_answers",
         "session_responses",
@@ -119,3 +120,30 @@ def remove_draft_schema(conn):
         "archived_attempts",
     ):
         conn.execute(f"DROP TABLE IF EXISTS {table}")
+
+
+def remove_source_schema(conn):
+    """Remove additive v7 fields to construct actual older schemas."""
+    conn.execute("DROP INDEX IF EXISTS idx_source_snapshot_family")
+    additions = {
+        "question_sources": (
+            "explanation",
+            "verified_at",
+            "source_area",
+            "source_topic",
+            "metadata_json",
+        ),
+        "sources": (
+            "superseded_by_source_id",
+            "metadata_json",
+            "snapshot_family",
+            "snapshot_fingerprint",
+        ),
+    }
+    for table, fields in additions.items():
+        columns = {
+            row[1] for row in conn.execute(f"PRAGMA table_info({table})")
+        }
+        for field in fields:
+            if field in columns:
+                conn.execute(f"ALTER TABLE {table} DROP COLUMN {field}")

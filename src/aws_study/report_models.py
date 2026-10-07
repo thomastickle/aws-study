@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal, NotRequired, TypedDict
 
+from .bank_metadata import JsonObject
+
 # Raw SQLite records stop at the preparation boundary in ReportService.
 JsonRecord = dict[str, Any]
 
@@ -53,6 +55,13 @@ class ContextSource(TypedDict):
     valid_from_year: int | None
     valid_to_year: int | None
     answers: list[ContextSourceAnswer]
+    explanation: NotRequired[str]
+    verified_at: NotRequired[str]
+    source_classification: NotRequired[dict[str, str | None]]
+    source_metadata: NotRequired[JsonObject]
+    metadata: NotRequired[JsonObject]
+    snapshot_family: NotRequired[str]
+    superseded_by_source_key: NotRequired[str]
 
 
 class ContextResult(TypedDict):

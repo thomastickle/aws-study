@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import asdict
 
 from .bank_schema import BankQuestion
@@ -27,7 +28,7 @@ class ImportRepository(SQLiteRepository):
         is_active: int = 1,
         created_at: str | None = None,
     ) -> tuple[int, bool]:
-        """Match identity, reject conflicting keys/classification, or create."""
+        """Match content and grading; canonical classification is first-owned."""
         fingerprint = content_fingerprint(
             question.text, (a.text for a in question.answers)
         )
@@ -39,8 +40,18 @@ class ImportRepository(SQLiteRepository):
             "question_text": question.text,
             "question_type": question.kind,
             "select_count": question.select_count,
-            "area": question.area,
-            "topic": question.topic,
+            "area": question.area
+            or (
+                question.source_classification.area
+                if question.source_classification
+                else None
+            ),
+            "topic": question.topic
+            or (
+                question.source_classification.topic
+                if question.source_classification
+                else None
+            ),
             "content_fingerprint": fingerprint,
             "answer_key_fingerprint": key,
             "fingerprint_version": FINGERPRINT_VERSION,
@@ -59,14 +70,8 @@ class ImportRepository(SQLiteRepository):
                 "question_type",
                 "select_count",
                 "answer_key_fingerprint",
-                "area",
-                "topic",
             ):
                 existing, incoming = row[field], params[field]
-                if field in ("area", "topic") and (
-                    existing is None or incoming is None
-                ):
-                    continue
                 if existing != incoming:
                     if field == "answer_key_fingerprint":
                         existing = [
@@ -93,8 +98,8 @@ class ImportRepository(SQLiteRepository):
                    topic=COALESCE(topic,:topic) WHERE id=:id""",
                 {
                     "id": row["id"],
-                    "area": question.area,
-                    "topic": question.topic,
+                    "area": params["area"],
+                    "topic": params["topic"],
                 },
             )
             return int(row["id"]), False
@@ -157,6 +162,29 @@ class ImportRepository(SQLiteRepository):
             "verification_status": status,
             "verified_year": verified_year,
             "created_at": created_at,
+            "explanation": question.explanation,
+            "verified_at": question.verified_at,
+            "source_area": (
+                question.source_classification.area
+                if question.source_classification
+                else question.area
+            ),
+            "source_topic": (
+                question.source_classification.topic
+                if question.source_classification
+                else question.topic
+            ),
+            "metadata_json": (
+                json.dumps(
+                    question.source_metadata,
+                    sort_keys=True,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    allow_nan=False,
+                )
+                if question.source_metadata is not None
+                else None
+            ),
         }
         if question.source_ref is not None:
             row = self._conn.execute(
@@ -182,10 +210,12 @@ class ImportRepository(SQLiteRepository):
             cursor = self._conn.execute(
                 """INSERT INTO question_sources(question_id,source_id,source_ref,
                        source_order,valid_from_year,valid_to_year,
-                       verification_status,verified_year,created_at)
+                       verification_status,verified_year,created_at,
+                       explanation,verified_at,source_area,source_topic,metadata_json)
                    VALUES (:question_id,:source_id,:source_ref,:source_order,
                        :valid_from_year,:valid_to_year,:verification_status,
-                       :verified_year,COALESCE(:created_at,CURRENT_TIMESTAMP))""",
+                       :verified_year,COALESCE(:created_at,CURRENT_TIMESTAMP),
+                       :explanation,:verified_at,:source_area,:source_topic,:metadata_json)""",
                 params,
             )
             link_id = self.inserted_id(cursor)
@@ -194,7 +224,9 @@ class ImportRepository(SQLiteRepository):
             self._conn.execute(
                 """UPDATE question_sources SET source_order=:source_order,
                    valid_from_year=:valid_from_year,valid_to_year=:valid_to_year,
-                   verification_status=:verification_status,verified_year=:verified_year
+                   verification_status=:verification_status,verified_year=:verified_year,
+                   explanation=:explanation,verified_at=:verified_at,
+                   source_area=:source_area,source_topic=:source_topic,metadata_json=:metadata_json
                    WHERE id=:id""",
                 {**params, "id": link_id},
             )

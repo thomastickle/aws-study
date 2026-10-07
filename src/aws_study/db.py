@@ -8,13 +8,14 @@ from importlib.resources import files
 from pathlib import Path
 
 DEFAULT_DB = Path("private/aws-study.db")
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 MIGRATION_STEPS = {
     2: ("schema.sql",),
     3: ("schema_v3.sql",),
     4: ("schema_v4.sql",),
     5: ("schema_v5.sql",),
     6: ("schema_v6.sql", "schema_v6_draft_conversion.sql"),
+    7: ("schema_v7.sql",),
 }
 
 
@@ -106,7 +107,7 @@ def schema_version(conn: sqlite3.Connection) -> int:
         "attempt_options": {"attempt_id", "option_id", "selected"},
         "review_notes": {"id", "question_id", "certification_id", "note_text"},
     }
-    if version in (2, 3, 4, 5, 6) and required.keys() <= tables:
+    if version in (2, 3, 4, 5, 6, 7) and required.keys() <= tables:
         for table, expected in required.items():
             columns = {
                 r[1] for r in conn.execute(f"PRAGMA table_info({table})")
@@ -228,6 +229,39 @@ def schema_version(conn: sqlite3.Connection) -> int:
                     raise ValueError(
                         f"Incomplete v6 schema: missing draft foreign keys in {table}"
                     )
+        if version >= 7:
+            additions = {
+                "question_sources": {
+                    "explanation",
+                    "verified_at",
+                    "source_area",
+                    "source_topic",
+                    "metadata_json",
+                },
+                "sources": {
+                    "metadata_json",
+                    "snapshot_family",
+                    "snapshot_fingerprint",
+                    "superseded_by_source_id",
+                },
+            }
+            for table, expected in additions.items():
+                columns = {
+                    r[1] for r in conn.execute(f"PRAGMA table_info({table})")
+                }
+                if not expected <= columns:
+                    raise ValueError(
+                        f"Incomplete v7 schema: missing columns in {table}"
+                    )
+            if not any(
+                row[2] == "sources"
+                and row[3] == "superseded_by_source_id"
+                and row[4] == "id"
+                for row in conn.execute("PRAGMA foreign_key_list(sources)")
+            ):
+                raise ValueError(
+                    "Incomplete v7 schema: missing supersession foreign key"
+                )
         return version
     raise ValueError(f"Unsupported database schema (user_version={version})")
 

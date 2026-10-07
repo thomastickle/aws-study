@@ -86,13 +86,11 @@ class ImportTests(BankTestCase):
 
     def test_conflicts_roll_back_and_identify_existing_and_incoming(self):
         self.import_questions([question()])
-        for field in ("key", "classification", "content"):
+        for field in ("key", "content"):
             changed = question()
             if field == "key":
                 for a in changed["answers"]:
                     a["correct"] = not a["correct"]
-            elif field == "classification":
-                changed["classification"]["area"] = "Networking"
             else:
                 changed["question"] = "Changed content"
             with (

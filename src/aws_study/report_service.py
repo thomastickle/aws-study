@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from .report_models import (
     ContextAnswer,
     ContextQuestion,
@@ -34,7 +36,7 @@ def _context_source(
         if answer["rationale"] != answers[answer["id"]]["rationale"]:
             reference["rationale"] = answer["rationale"]
         references.append(reference)
-    return {
+    result: ContextSource = {
         "source_key": source["source_key"],
         "name": source["name"],
         "source_ref": source["source_ref"],
@@ -48,6 +50,27 @@ def _context_source(
         "valid_to_year": source["valid_to_year"],
         "answers": references,
     }
+    if source.get("explanation") is not None:
+        result["explanation"] = source["explanation"]
+    if source.get("verified_at") is not None:
+        result["verified_at"] = source["verified_at"]
+    if (
+        source.get("source_area") is not None
+        or source.get("source_topic") is not None
+    ):
+        result["source_classification"] = {
+            "area": source["source_area"],
+            "topic": source["source_topic"],
+        }
+    if source.get("metadata_json") is not None:
+        result["source_metadata"] = json.loads(source["metadata_json"])
+    if source.get("source_metadata_json") is not None:
+        result["metadata"] = json.loads(source["source_metadata_json"])
+    if source.get("snapshot_family") is not None:
+        result["snapshot_family"] = source["snapshot_family"]
+    if source.get("superseded_by_source_key") is not None:
+        result["superseded_by_source_key"] = source["superseded_by_source_key"]
+    return result
 
 
 def _context_question(record: ReportSessionQuestion) -> ContextQuestion:

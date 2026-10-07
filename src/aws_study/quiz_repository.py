@@ -31,7 +31,10 @@ class QuizRepository(SQLiteRepository):
         """Load eligible questions and the history needed for weighting."""
         where = ["q.certification_id=:certification_id", "q.is_active=1"]
         params = {"certification_id": cert_id, "target_year": target_year}
-        provenance = ["qs.question_id=q.id"]
+        provenance = [
+            "qs.question_id=q.id",
+            "s.superseded_by_source_id IS NULL",
+        ]
         if target_year is not None:
             provenance.extend(
                 [
@@ -47,7 +50,7 @@ class QuizRepository(SQLiteRepository):
             if target_year is not None:
                 provenance.append("qs.verified_year>=:target_year")
         where.append(
-            "EXISTS (SELECT 1 FROM question_sources qs WHERE "
+            "EXISTS (SELECT 1 FROM question_sources qs JOIN sources s ON s.id=qs.source_id WHERE "
             + " AND ".join(provenance)
             + ")"
         )
